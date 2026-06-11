@@ -375,14 +375,15 @@ function simMonth() {
 }
 
 let simTimer = null;
+const SPEED_INTERVALS = [0, 2400, 1000, 400]; // 停止/ゆっくり/ふつう/はやい
+const SPEED_LABELS = ['⏸', '▶', '▶▶', '▶▶▶'];
 function setSpeed(s) {
   g.speed = s;
   if (simTimer) { clearInterval(simTimer); simTimer = null; }
-  const intervals = [0, 1200, 400];
   if (s > 0 && g.running) {
-    simTimer = setInterval(simMonth, intervals[s]);
+    simTimer = setInterval(simMonth, SPEED_INTERVALS[s]);
   }
-  $('btn-speed').textContent = ['⏸', '▶', '⏩'][s];
+  $('btn-speed').textContent = SPEED_LABELS[s];
 }
 
 /* =========================================================
@@ -479,7 +480,8 @@ function placeTool(tx, ty) {
 
   if (!spend(cost)) return;
   g.t[i] = tileType;
-  g.lvl[i] = 0;
+  // 水上に建てた道路・送電線は橋になる(lvl=1を橋フラグとして使う)
+  g.lvl[i] = cur === T.WATER ? 1 : 0;
   g.fireT[i] = 0;
   if (tileType === T.POWER) computePower();
   updateHUD();
@@ -504,107 +506,443 @@ function placeLine(x0, y0, x1, y1) {
  * ========================================================= */
 const spriteCache = new Map();
 
-function tileSprite(type, lvl, ts) {
-  const key = type + '_' + lvl + '_' + ts;
+/* --- 描画ヘルパー ---
+ * スプライトは幅ts×高さts*2のキャンバス。下半分(y=ts〜2ts)が地面で、
+ * 建物は上半分にはみ出して立体感を出す。 */
+
+function groundGrass(c, ts, parity) {
+  c.fillStyle = parity ? '#6fb44a' : '#77bb51';
+  c.fillRect(0, ts, ts, ts);
+  c.fillStyle = 'rgba(255,255,255,0.07)';
+  const d = Math.max(1, ts * 0.06);
+  c.fillRect(ts * 0.2, ts * 1.3, d, d);
+  c.fillRect(ts * 0.65, ts * 1.6, d, d);
+}
+
+function groundWater(c, ts) {
+  c.fillStyle = '#3a7bd5';
+  c.fillRect(0, ts, ts, ts);
+  c.strokeStyle = 'rgba(255,255,255,0.3)';
+  c.lineWidth = 1;
+  c.beginPath();
+  c.moveTo(ts * 0.12, ts * 1.35);
+  c.quadraticCurveTo(ts * 0.28, ts * 1.28, ts * 0.44, ts * 1.35);
+  c.moveTo(ts * 0.5, ts * 1.7);
+  c.quadraticCurveTo(ts * 0.66, ts * 1.63, ts * 0.82, ts * 1.7);
+  c.stroke();
+}
+
+// 雷マーク
+function boltShape(c, x, y, s, color) {
+  c.fillStyle = color;
+  c.beginPath();
+  c.moveTo(x + 0.12 * s, y - 0.5 * s);
+  c.lineTo(x - 0.26 * s, y + 0.12 * s);
+  c.lineTo(x - 0.02 * s, y + 0.12 * s);
+  c.lineTo(x - 0.12 * s, y + 0.5 * s);
+  c.lineTo(x + 0.26 * s, y - 0.12 * s);
+  c.lineTo(x + 0.02 * s, y - 0.12 * s);
+  c.closePath();
+  c.fill();
+}
+
+// 立体感のある建物(落ち影+壁+右側面の陰+窓+屋根)を描く
+function drawBox(c, ts, opt) {
+  const m = opt.m !== undefined ? opt.m : ts * 0.14;
+  const w = ts - 2 * m;
+  const baseY = ts * 2 - m * 0.8; // 建物の足元
+  const wallTop = baseY - opt.wallH;
+  // 落ち影
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  c.fillRect(m + ts * 0.07, baseY - ts * 0.05, w, ts * 0.1);
+  // 壁
+  c.fillStyle = opt.wall;
+  c.fillRect(m, wallTop, w, opt.wallH);
+  // 右側面の陰
+  const sw = Math.max(1.5, ts * 0.1);
+  c.fillStyle = opt.wallDark;
+  c.fillRect(m + w - sw, wallTop, sw, opt.wallH);
+  // 窓
+  if (opt.floors) {
+    c.fillStyle = opt.win || '#fff3b0';
+    const cols = opt.cols || 3;
+    const fH = opt.wallH / opt.floors;
+    for (let f = 0; f < opt.floors; f++) {
+      for (let k = 0; k < cols; k++) {
+        const wx = m + (w * (k + 0.5)) / cols - w * 0.1;
+        const wy = wallTop + fH * (f + 0.28);
+        c.fillRect(wx, wy, w * 0.2, fH * 0.44);
+      }
+    }
+  }
+  // ドア
+  if (opt.door) {
+    c.fillStyle = opt.door;
+    c.fillRect(m + w / 2 - ts * 0.08, baseY - ts * 0.2, ts * 0.16, ts * 0.2);
+  }
+  // 屋根
+  if (opt.roofType === 'pitched') {
+    c.fillStyle = opt.roof;
+    c.beginPath();
+    c.moveTo(m - ts * 0.05, wallTop);
+    c.lineTo(m + w / 2, wallTop - opt.roofH);
+    c.lineTo(m + w + ts * 0.05, wallTop);
+    c.closePath();
+    c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.15)';
+    c.beginPath();
+    c.moveTo(m - ts * 0.05, wallTop);
+    c.lineTo(m + w / 2, wallTop - opt.roofH);
+    c.lineTo(m + w * 0.3, wallTop);
+    c.closePath();
+    c.fill();
+  } else {
+    const rd = opt.roofD !== undefined ? opt.roofD : ts * 0.28;
+    c.fillStyle = opt.roof;
+    c.fillRect(m, wallTop - rd, w, rd);
+    c.fillStyle = 'rgba(255,255,255,0.2)';
+    c.fillRect(m, wallTop - rd, w, Math.max(1, rd * 0.25));
+  }
+  return { m, w, baseY, wallTop };
+}
+
+// 煙突+煙
+function drawChimney(c, x, y, cw, ch) {
+  c.fillStyle = '#9aa0a6';
+  c.fillRect(x, y - ch, cw, ch);
+  c.fillStyle = '#c0392b';
+  c.fillRect(x, y - ch, cw, Math.max(1, ch * 0.18));
+  c.fillStyle = 'rgba(220,220,220,0.55)';
+  c.beginPath(); c.arc(x + cw * 0.5, y - ch - cw * 0.7, cw * 0.55, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(x + cw * 1.2, y - ch - cw * 1.5, cw * 0.75, 0, Math.PI * 2); c.fill();
+}
+
+// 木(影+幹+樹冠)
+function drawTreeShape(c, ts, scale, ox, oy) {
+  const x = ts / 2 + ox, by = ts * 1.8 + oy;
+  c.save();
+  c.translate(x, by);
+  c.scale(1, 0.45);
+  c.fillStyle = 'rgba(0,0,0,0.25)';
+  c.beginPath(); c.arc(0, 0, ts * 0.3 * scale, 0, Math.PI * 2); c.fill();
+  c.restore();
+  c.fillStyle = '#7a5230';
+  c.fillRect(x - ts * 0.05 * scale, by - ts * 0.5 * scale, ts * 0.1 * scale, ts * 0.5 * scale);
+  c.fillStyle = '#2f7d32';
+  c.beginPath(); c.arc(x, by - ts * 0.62 * scale, ts * 0.3 * scale, 0, Math.PI * 2); c.fill();
+  c.fillStyle = '#4caf50';
+  c.beginPath(); c.arc(x - ts * 0.08 * scale, by - ts * 0.7 * scale, ts * 0.16 * scale, 0, Math.PI * 2); c.fill();
+}
+
+// 道路:隣接マスク(北1/東2/南4/西8)に応じて道とセンターラインの向きが変わる
+function drawRoadTile(c, ts, mask, bridge) {
+  if (bridge) groundWater(c, ts); else groundGrass(c, ts, 0);
+  const GY = ts;
+  const pad = ts * 0.14;
+  const m = mask === 0 ? 10 : mask; // 孤立タイルは東西の道として描く
+  // 橋桁の影
+  if (bridge) {
+    c.fillStyle = 'rgba(0,0,0,0.25)';
+    c.fillRect(pad * 0.6, GY + pad * 0.6, ts - pad * 1.2, ts - pad * 1.2);
+  }
+  // アスファルト本体(中央+接続方向への腕)
+  c.fillStyle = bridge ? '#5a5f66' : '#4b4b50';
+  c.fillRect(pad, GY + pad, ts - 2 * pad, ts - 2 * pad);
+  if (m & 1) c.fillRect(pad, GY, ts - 2 * pad, pad + 1);
+  if (m & 4) c.fillRect(pad, GY + ts - pad - 1, ts - 2 * pad, pad + 1);
+  if (m & 8) c.fillRect(0, GY + pad, pad + 1, ts - 2 * pad);
+  if (m & 2) c.fillRect(ts - pad - 1, GY + pad, pad + 1, ts - 2 * pad);
+  // 縁石(道がつながっていない側)
+  c.fillStyle = bridge ? '#aab2bb' : '#9e9e9e';
+  const cb = Math.max(1, ts * 0.05);
+  if (!(m & 1)) c.fillRect(pad, GY + pad, ts - 2 * pad, cb);
+  if (!(m & 4)) c.fillRect(pad, GY + ts - pad - cb, ts - 2 * pad, cb);
+  if (!(m & 8)) c.fillRect(pad, GY + pad, cb, ts - 2 * pad);
+  if (!(m & 2)) c.fillRect(ts - pad - cb, GY + pad, cb, ts - 2 * pad);
+  // センターライン:道の向きに合わせる
+  const lw = Math.max(1, ts * 0.06);
+  const dash = Math.max(2, ts * 0.16);
+  const bits = (m & 1) + ((m >> 1) & 1) + ((m >> 2) & 1) + ((m >> 3) & 1);
+  c.fillStyle = '#e6c84f';
+  if (m === 10 || m === 2 || m === 8) {
+    // 東西方向 → 横向きの破線
+    for (let x = ts * 0.06; x < ts - 2; x += dash * 2) {
+      c.fillRect(x, GY + ts / 2 - lw / 2, dash, lw);
+    }
+  } else if (m === 5 || m === 1 || m === 4) {
+    // 南北方向 → 縦向きの破線
+    for (let y = GY + ts * 0.06; y < GY + ts - 2; y += dash * 2) {
+      c.fillRect(ts / 2 - lw / 2, y, lw, dash);
+    }
+  } else if (bits >= 3) {
+    // 交差点 → 横断歩道
+    c.fillStyle = 'rgba(255,255,255,0.8)';
+    const sw2 = Math.max(1, ts * 0.07);
+    for (let k = 0; k < 4; k++) {
+      const off = pad + ts * 0.08 + k * ts * 0.18;
+      if (off > ts - pad - ts * 0.08) break;
+      if (m & 1) c.fillRect(off, GY + 1, sw2, pad * 0.8);
+      if (m & 4) c.fillRect(off, GY + ts - pad * 0.8 - 1, sw2, pad * 0.8);
+      if (m & 8) c.fillRect(1, GY + off, pad * 0.8, sw2);
+      if (m & 2) c.fillRect(ts - pad * 0.8 - 1, GY + off, pad * 0.8, sw2);
+    }
+  }
+}
+
+// 送電線:隣接マスクに応じてケーブルの向きが変わる+鉄塔
+function drawWireTile(c, ts, mask, bridge) {
+  if (bridge) groundWater(c, ts); else groundGrass(c, ts, 0);
+  const GY = ts;
+  const m = mask === 0 ? 10 : mask;
+  const cy = GY + ts * 0.5;
+  c.strokeStyle = '#3b3b3b';
+  c.lineWidth = Math.max(1, ts * 0.05);
+  c.beginPath();
+  if (m & 1) { c.moveTo(ts / 2, GY); c.lineTo(ts / 2, cy); }
+  if (m & 4) { c.moveTo(ts / 2, GY + ts); c.lineTo(ts / 2, cy); }
+  if (m & 8) { c.moveTo(0, cy); c.lineTo(ts / 2, cy); }
+  if (m & 2) { c.moveTo(ts, cy); c.lineTo(ts / 2, cy); }
+  c.stroke();
+  // 鉄塔(上にはみ出して立体感を出す)
+  const px = ts / 2;
+  c.save();
+  c.translate(px, GY + ts * 0.82);
+  c.scale(1, 0.4);
+  c.fillStyle = 'rgba(0,0,0,0.2)';
+  c.beginPath(); c.arc(0, 0, ts * 0.18, 0, Math.PI * 2); c.fill();
+  c.restore();
+  c.strokeStyle = '#8a7a5a';
+  c.lineWidth = Math.max(1, ts * 0.07);
+  c.beginPath();
+  c.moveTo(px, GY + ts * 0.82);
+  c.lineTo(px, GY - ts * 0.25);
+  c.moveTo(px - ts * 0.25, GY - ts * 0.1);
+  c.lineTo(px + ts * 0.25, GY - ts * 0.1);
+  c.stroke();
+  c.fillStyle = '#ddd';
+  c.fillRect(px - ts * 0.25, GY - ts * 0.14, Math.max(1, ts * 0.06), Math.max(1, ts * 0.08));
+  c.fillRect(px + ts * 0.19, GY - ts * 0.14, Math.max(1, ts * 0.06), Math.max(1, ts * 0.08));
+}
+
+// 未開発の区画(色付きの更地+ラベル)
+function zonePlot(c, ts, fill, border, label, labelColor) {
+  groundGrass(c, ts, 0);
+  c.fillStyle = fill;
+  c.fillRect(1, ts + 1, ts - 2, ts - 2);
+  c.strokeStyle = border;
+  c.lineWidth = 1;
+  c.strokeRect(1.5, ts + 1.5, ts - 3, ts - 3);
+  c.fillStyle = labelColor;
+  c.font = 'bold ' + Math.floor(ts * 0.42) + 'px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(label, ts / 2, ts * 1.52);
+}
+
+// 開発済み区画の地面(薄い色+細い枠)
+function zoneGroundDev(c, ts, fill, border) {
+  c.fillStyle = fill;
+  c.fillRect(0, ts, ts, ts);
+  c.strokeStyle = border;
+  c.lineWidth = 1;
+  c.strokeRect(0.5, ts + 0.5, ts - 1, ts - 1);
+}
+
+function tileSprite(type, lvl, variant, ts) {
+  const key = type + '_' + lvl + '_' + variant + '_' + ts;
   let sp = spriteCache.get(key);
   if (sp) return sp;
-  if (spriteCache.size > 400) spriteCache.clear();
+  if (spriteCache.size > 800) spriteCache.clear();
 
   sp = document.createElement('canvas');
-  sp.width = ts; sp.height = ts;
+  sp.width = ts;
+  sp.height = ts * 2;
   const c = sp.getContext('2d');
 
-  const emoji = (ch, scale = 0.78) => {
-    c.font = Math.floor(ts * scale) + 'px serif';
-    c.textAlign = 'center';
-    c.textBaseline = 'middle';
-    c.fillText(ch, ts / 2, ts / 2 + ts * 0.04);
-  };
-  const grassBg = () => { c.fillStyle = '#6fb44a'; c.fillRect(0, 0, ts, ts); };
-
   switch (type) {
-    case T.GRASS: {
-      grassBg();
-      c.fillStyle = 'rgba(255,255,255,0.05)';
-      if (lvl % 2) c.fillRect(0, 0, ts, ts); // 市松の濃淡(lvl流用)
+    case T.GRASS:
+      groundGrass(c, ts, lvl % 2);
       break;
-    }
     case T.WATER:
-      c.fillStyle = '#3a7bd5'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = 'rgba(255,255,255,0.25)';
-      c.beginPath();
-      c.moveTo(ts * 0.15, ts * 0.4); c.lineTo(ts * 0.45, ts * 0.4);
-      c.moveTo(ts * 0.5, ts * 0.7); c.lineTo(ts * 0.85, ts * 0.7);
-      c.stroke();
+      groundWater(c, ts);
       break;
-    case T.TREE: grassBg(); emoji('🌲'); break;
+    case T.TREE:
+      groundGrass(c, ts, 0);
+      drawTreeShape(c, ts, 1, 0, 0);
+      break;
     case T.ROAD:
-      c.fillStyle = '#4a4a4a'; c.fillRect(0, 0, ts, ts);
-      c.fillStyle = '#e0d060';
-      c.fillRect(ts * 0.46, ts * 0.1, ts * 0.08, ts * 0.25);
-      c.fillRect(ts * 0.46, ts * 0.65, ts * 0.08, ts * 0.25);
+      drawRoadTile(c, ts, variant, lvl === 1);
       break;
     case T.WIRE:
-      grassBg();
-      c.strokeStyle = '#7a5c3a'; c.lineWidth = Math.max(1, ts * 0.08);
-      c.beginPath();
-      c.moveTo(ts / 2, ts * 0.15); c.lineTo(ts / 2, ts * 0.85);
-      c.moveTo(ts * 0.25, ts * 0.3); c.lineTo(ts * 0.75, ts * 0.3);
-      c.stroke();
-      c.strokeStyle = '#222';
-      c.beginPath();
-      c.moveTo(0, ts * 0.32); c.lineTo(ts, ts * 0.32);
-      c.stroke();
+      drawWireTile(c, ts, variant, lvl === 1);
       break;
     case T.RES: {
-      c.fillStyle = '#a5d6a7'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#2e7d32'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      const icons = ['', '🛖', '🏠', '🏘️', '🏢'];
-      if (lvl === 0) { c.fillStyle = '#2e7d32'; emoji('住', 0.5); }
-      else emoji(icons[lvl], 0.6 + lvl * 0.06);
+      if (lvl === 0) { zonePlot(c, ts, 'rgba(129,199,132,0.45)', '#2e7d32', '住', '#1b5e20'); break; }
+      zoneGroundDev(c, ts, '#9ccc8f', '#2e7d32');
+      if (lvl === 1) {
+        drawBox(c, ts, { m: ts * 0.2, wallH: ts * 0.28, wall: '#f0e2c0', wallDark: '#d6c49e',
+          roofType: 'pitched', roof: '#c4513c', roofH: ts * 0.3, door: '#7a5230' });
+      } else if (lvl === 2) {
+        drawBox(c, ts, { m: ts * 0.15, wallH: ts * 0.4, wall: '#efe0bd', wallDark: '#d2c096',
+          roofType: 'pitched', roof: '#a8433a', roofH: ts * 0.32, door: '#6b4626',
+          floors: 1, cols: 2, win: '#fff3b0' });
+      } else if (lvl === 3) {
+        drawBox(c, ts, { m: ts * 0.13, wallH: ts * 0.62, wall: '#e3cfa8', wallDark: '#c4af87',
+          roof: '#8d6e63', floors: 3, cols: 3, win: '#fff3b0', door: '#5d4037' });
+      } else {
+        const b = drawBox(c, ts, { m: ts * 0.11, wallH: ts * 0.9, wall: '#dfe3e8', wallDark: '#b9bfc7',
+          roof: '#7a7f87', floors: 5, cols: 3, win: '#9fc6e8', door: '#455a64' });
+        c.fillStyle = '#99a1ab'; // 屋上の貯水タンク
+        c.fillRect(b.m + b.w * 0.6, b.wallTop - ts * 0.42, b.w * 0.22, ts * 0.16);
+      }
       break;
     }
     case T.COM: {
-      c.fillStyle = '#90caf9'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#1565c0'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      const icons = ['', '🏪', '🏬', '🏢', '🌆'];
-      if (lvl === 0) { c.fillStyle = '#1565c0'; emoji('商', 0.5); }
-      else emoji(icons[lvl], 0.6 + lvl * 0.06);
+      if (lvl === 0) { zonePlot(c, ts, 'rgba(100,181,246,0.45)', '#1565c0', '商', '#0d47a1'); break; }
+      zoneGroundDev(c, ts, '#9fc3e0', '#1565c0');
+      if (lvl === 1) {
+        const b = drawBox(c, ts, { m: ts * 0.18, wallH: ts * 0.32, wall: '#f5f5f5', wallDark: '#d9d9d9',
+          roof: '#90a4ae', door: '#546e7a' });
+        // 店先の縞模様のひさし
+        const ah = ts * 0.12;
+        for (let k = 0; k < 4; k++) {
+          c.fillStyle = k % 2 ? '#fff' : '#ef6c00';
+          c.fillRect(b.m + (b.w * k) / 4, b.wallTop + ts * 0.02, b.w / 4, ah);
+        }
+      } else if (lvl === 2) {
+        const b = drawBox(c, ts, { m: ts * 0.15, wallH: ts * 0.5, wall: '#dde7ee', wallDark: '#bccad4',
+          roof: '#607d8b', floors: 2, cols: 2, win: '#fffde7', door: '#37474f' });
+        c.fillStyle = '#e2554d'; // 看板
+        c.fillRect(b.m, b.wallTop + ts * 0.02, b.w, ts * 0.1);
+      } else if (lvl === 3) {
+        drawBox(c, ts, { m: ts * 0.13, wallH: ts * 0.72, wall: '#7fb3d9', wallDark: '#5d8fb5',
+          roof: '#455a64', floors: 4, cols: 3, win: '#d9ecf7' });
+      } else {
+        const b = drawBox(c, ts, { m: ts * 0.11, wallH: ts * 0.94, wall: '#5f87b8', wallDark: '#476a94',
+          roof: '#37474f', floors: 6, cols: 3, win: '#cfe6f7' });
+        // 屋上アンテナ
+        c.strokeStyle = '#cfd8dc';
+        c.lineWidth = Math.max(1, ts * 0.05);
+        c.beginPath();
+        c.moveTo(b.m + b.w / 2, b.wallTop - ts * 0.28);
+        c.lineTo(b.m + b.w / 2, b.wallTop - ts * 0.55);
+        c.stroke();
+        c.fillStyle = '#ff5252';
+        c.beginPath();
+        c.arc(b.m + b.w / 2, b.wallTop - ts * 0.55, Math.max(1, ts * 0.05), 0, Math.PI * 2);
+        c.fill();
+      }
       break;
     }
     case T.IND: {
-      c.fillStyle = '#ffe082'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#ef6c00'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      if (lvl === 0) { c.fillStyle = '#ef6c00'; emoji('工', 0.5); }
-      else emoji('🏭', 0.55 + lvl * 0.08);
+      if (lvl === 0) { zonePlot(c, ts, 'rgba(255,213,79,0.5)', '#ef6c00', '工', '#bf5e00'); break; }
+      zoneGroundDev(c, ts, '#d9c98e', '#ef6c00');
+      const wallH = ts * (0.26 + lvl * 0.09);
+      const b = drawBox(c, ts, { m: ts * 0.13, wallH, wall: '#b9b3a6', wallDark: '#9b9588',
+        roof: '#857f70', floors: 1, cols: 3, win: '#cfd8dc', door: '#5f5950' });
+      if (lvl >= 2) drawChimney(c, b.m + b.w * 0.15, b.wallTop - ts * 0.2, Math.max(2, ts * 0.12), ts * 0.3);
+      if (lvl >= 3) drawChimney(c, b.m + b.w * 0.55, b.wallTop - ts * 0.2, Math.max(2, ts * 0.12), ts * 0.38);
+      if (lvl >= 4) {
+        c.fillStyle = '#7d8a8f'; // 貯蔵タンク
+        c.beginPath();
+        c.arc(b.m + b.w * 0.85, b.wallTop + wallH * 0.4, ts * 0.12, 0, Math.PI * 2);
+        c.fill();
+      }
       break;
     }
-    case T.POWER:
-      c.fillStyle = '#616161'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#fdd835'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      emoji('⚡');
+    case T.POWER: {
+      groundGrass(c, ts, 0);
+      c.fillStyle = '#b0b4b8';
+      c.fillRect(1, ts + 1, ts - 2, ts - 2);
+      const b = drawBox(c, ts, { m: ts * 0.12, wallH: ts * 0.55, wall: '#6b7077', wallDark: '#565b61',
+        roof: '#4a4e54' });
+      drawChimney(c, b.m + b.w * 0.12, b.wallTop - ts * 0.22, Math.max(2, ts * 0.14), ts * 0.42);
+      drawChimney(c, b.m + b.w * 0.6, b.wallTop - ts * 0.22, Math.max(2, ts * 0.14), ts * 0.34);
+      boltShape(c, b.m + b.w / 2, b.wallTop + ts * 0.28, ts * 0.4, '#ffd835');
       break;
-    case T.POLICE:
-      c.fillStyle = '#bbdefb'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#0d47a1'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      emoji('🚓', 0.65);
+    }
+    case T.POLICE: {
+      groundGrass(c, ts, 0);
+      const b = drawBox(c, ts, { m: ts * 0.14, wallH: ts * 0.46, wall: '#eef2f5', wallDark: '#cfd6db',
+        roof: '#3f6fb5', door: '#37474f' });
+      c.fillStyle = '#2a5fa8';
+      c.fillRect(b.m, b.wallTop + ts * 0.02, b.w, ts * 0.2);
+      c.fillStyle = '#fff';
+      c.font = 'bold ' + Math.max(6, Math.floor(ts * 0.18)) + 'px sans-serif';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('警察', b.m + b.w / 2, b.wallTop + ts * 0.12);
       break;
-    case T.FIRE_ST:
-      c.fillStyle = '#ffcdd2'; c.fillRect(0, 0, ts, ts);
-      c.strokeStyle = '#b71c1c'; c.strokeRect(0.5, 0.5, ts - 1, ts - 1);
-      emoji('🚒', 0.65);
+    }
+    case T.FIRE_ST: {
+      groundGrass(c, ts, 0);
+      const b = drawBox(c, ts, { m: ts * 0.14, wallH: ts * 0.46, wall: '#f7efe9', wallDark: '#dcd2ca',
+        roof: '#c43c3c', door: '#8d3b32' });
+      c.fillStyle = '#c43c3c';
+      c.fillRect(b.m, b.wallTop + ts * 0.02, b.w, ts * 0.2);
+      c.fillStyle = '#fff';
+      c.font = 'bold ' + Math.max(6, Math.floor(ts * 0.18)) + 'px sans-serif';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('消防', b.m + b.w / 2, b.wallTop + ts * 0.12);
       break;
-    case T.PARK: grassBg(); emoji('🌳'); break;
-    case T.RUBBLE:
-      c.fillStyle = '#8d6e63'; c.fillRect(0, 0, ts, ts);
-      c.fillStyle = '#5d4037';
-      c.fillRect(ts * 0.2, ts * 0.3, ts * 0.2, ts * 0.2);
-      c.fillRect(ts * 0.55, ts * 0.55, ts * 0.25, ts * 0.18);
+    }
+    case T.PARK: {
+      c.fillStyle = '#8fd06a';
+      c.fillRect(0, ts, ts, ts);
+      c.fillStyle = '#d9c79b'; // 小道
+      c.fillRect(ts * 0.42, ts, ts * 0.16, ts);
+      drawTreeShape(c, ts, 0.7, -ts * 0.22, -ts * 0.05);
+      const fl = ['#f06292', '#fff176', '#ef5350'];
+      const fd = Math.max(1, ts * 0.08);
+      for (let k = 0; k < 3; k++) {
+        c.fillStyle = fl[k];
+        c.fillRect(ts * (0.65 + 0.09 * k), ts * (1.55 + 0.1 * (k % 2)), fd, fd);
+      }
       break;
-    case T.FIRE:
-      c.fillStyle = '#bf360c'; c.fillRect(0, 0, ts, ts);
-      emoji('🔥');
+    }
+    case T.RUBBLE: {
+      c.fillStyle = '#8d7a6a';
+      c.fillRect(0, ts, ts, ts);
+      c.fillStyle = '#6b5a4d';
+      c.fillRect(ts * 0.15, ts * 1.25, ts * 0.25, ts * 0.2);
+      c.fillRect(ts * 0.55, ts * 1.5, ts * 0.28, ts * 0.22);
+      c.fillStyle = '#a39281';
+      c.fillRect(ts * 0.4, ts * 1.6, ts * 0.18, ts * 0.14);
+      c.strokeStyle = '#574a3f';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(ts * 0.2, ts * 1.7);
+      c.lineTo(ts * 0.45, ts * 1.45);
+      c.stroke();
       break;
+    }
+    case T.FIRE: {
+      c.fillStyle = '#4e342e';
+      c.fillRect(0, ts, ts, ts);
+      // 炎(外側→内側)
+      c.fillStyle = '#e64a19';
+      c.beginPath();
+      c.moveTo(ts * 0.2, ts * 1.85);
+      c.quadraticCurveTo(ts * 0.05, ts * 1.3, ts * 0.35, ts * 0.95);
+      c.quadraticCurveTo(ts * 0.42, ts * 1.25, ts * 0.5, ts * 0.8);
+      c.quadraticCurveTo(ts * 0.62, ts * 1.2, ts * 0.75, ts * 1.0);
+      c.quadraticCurveTo(ts * 0.95, ts * 1.45, ts * 0.8, ts * 1.85);
+      c.closePath();
+      c.fill();
+      c.fillStyle = '#ffb300';
+      c.beginPath();
+      c.moveTo(ts * 0.35, ts * 1.82);
+      c.quadraticCurveTo(ts * 0.3, ts * 1.4, ts * 0.5, ts * 1.15);
+      c.quadraticCurveTo(ts * 0.7, ts * 1.4, ts * 0.65, ts * 1.82);
+      c.closePath();
+      c.fill();
+      c.fillStyle = '#fff59d';
+      c.beginPath();
+      c.arc(ts * 0.5, ts * 1.7, ts * 0.12, 0, Math.PI * 2);
+      c.fill();
+      break;
+    }
   }
   spriteCache.set(key, sp);
   return sp;
@@ -624,6 +962,18 @@ function clampCamera() {
   cam.y = clamp(cam.y, -vh * 0.4, H * ts - vh * 0.6);
 }
 
+// 隣接タイルとの接続マスク(北=1, 東=2, 南=4, 西=8)
+function connMask(x, y, type) {
+  const match = (nx, ny) => {
+    if (!inB(nx, ny)) return false;
+    const t = g.t[idx(nx, ny)];
+    if (type === T.ROAD) return t === T.ROAD;
+    return t === T.WIRE || t === T.POWER;
+  };
+  return (match(x, y - 1) ? 1 : 0) | (match(x + 1, y) ? 2 : 0) |
+         (match(x, y + 1) ? 4 : 0) | (match(x - 1, y) ? 8 : 0);
+}
+
 function draw() {
   const ts = Math.max(4, Math.round(BASE_TILE * cam.zoom));
   const vw = cv.clientWidth, vh = cv.clientHeight;
@@ -633,28 +983,38 @@ function draw() {
   const x0 = Math.max(0, Math.floor(cam.x / ts));
   const y0 = Math.max(0, Math.floor(cam.y / ts));
   const x1 = Math.min(W - 1, Math.ceil((cam.x + vw) / ts));
-  const y1 = Math.min(H - 1, Math.ceil((cam.y + vh) / ts));
+  // 建物が上にはみ出して見えるよう、下端の1行先まで描く
+  const y1 = Math.min(H - 1, Math.ceil((cam.y + vh) / ts) + 1);
   const blink = ((Date.now() / 450) | 0) % 2 === 0;
+  const bolts = [];
 
+  // 奥(上)から手前(下)へ描くと、はみ出した建物が正しく重なる
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const i = idx(x, y);
       const t = g.t[i];
-      const lvl = t === T.GRASS ? (x * 7 + y * 13) % 2 : g.lvl[i];
+      let lvl = g.lvl[i];
+      let variant = 0;
+      if (t === T.GRASS) lvl = (x * 7 + y * 13) % 2;
+      else if (t === T.ROAD || t === T.WIRE) variant = connMask(x, y, t);
       const px = Math.round(x * ts - cam.x);
       const py = Math.round(y * ts - cam.y);
-      cx.drawImage(tileSprite(t, lvl, ts), px, py);
+      cx.drawImage(tileSprite(t, lvl, variant, ts), px, py - ts);
 
-      // 電気が来ていない区画・施設は ⚡ を点滅表示
       if (blink && !g.powered[i] &&
           (isZone(t) || t === T.POLICE || t === T.FIRE_ST)) {
-        cx.font = Math.floor(ts * 0.5) + 'px serif';
-        cx.textAlign = 'left';
-        cx.textBaseline = 'top';
-        cx.fillStyle = '#ff0';
-        cx.fillText('⚡', px + 1, py + 1);
+        bolts.push([px, py]);
       }
     }
+  }
+
+  // 電気が来ていないマーク(建物に隠れないよう最後に描く)
+  for (const [px, py] of bolts) {
+    cx.fillStyle = 'rgba(0,0,0,0.45)';
+    cx.beginPath();
+    cx.arc(px + ts * 0.3, py + ts * 0.3, ts * 0.26, 0, Math.PI * 2);
+    cx.fill();
+    boltShape(cx, px + ts * 0.3, py + ts * 0.3, ts * 0.42, '#ffeb3b');
   }
   requestAnimationFrame(draw);
 }
@@ -799,7 +1159,9 @@ function buildToolbar() {
 }
 
 $('btn-speed').addEventListener('click', () => {
-  setSpeed((g.speed + 1) % 3);
+  setSpeed((g.speed + 1) % SPEED_INTERVALS.length);
+  const names = ['停止', 'ゆっくり', 'ふつう', 'はやい'];
+  toast('⏱ 時間の速さ: ' + names[g.speed]);
 });
 
 $('btn-menu').addEventListener('click', () => {
