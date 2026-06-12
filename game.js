@@ -12,7 +12,8 @@ const SAVE_KEY = 'machizukuri_save_v1';
 const START_FUNDS = 20000;
 const START_YEAR = 1990;
 const MAX_LEVEL = 4;           // 区画の最大発展レベル
-const PLANT_CAPACITY = 300;    // 発電所1基が電気を送れるタイル数
+const PLANT_CAPACITY = 300;    // 石炭発電所1基が電気を送れるタイル数
+const NUCLEAR_CAPACITY = 700;  // 原子力発電所1基が電気を送れるタイル数
 
 // タイル種別
 const T = {
@@ -20,25 +21,40 @@ const T = {
   RES: 5, COM: 6, IND: 7,
   POWER: 8, POLICE: 9, FIRE_ST: 10, PARK: 11,
   RUBBLE: 12, FIRE: 13,
+  RAIL: 14, FLOOD: 15,
+  NUCLEAR: 16, STADIUM: 17, SEAPORT: 18, AIRPORT: 19,
+};
+
+// マルチタイル建物のサイズ(タイル数)。lvlに足元内の位置(dy*size+dx)を
+// 格納し、lvl=0のタイルをアンカー(左上)とする
+const BIG = {
+  [T.NUCLEAR]: 2, [T.STADIUM]: 2, [T.SEAPORT]: 2, [T.AIRPORT]: 2,
 };
 
 // ツール定義(ツールバー表示順)
 const TOOLS = [
-  { id: 'pan',      label: '移動',   icon: '✋', cost: 0 },
-  { id: 'road',     label: '道路',   icon: '🛣️', cost: 10 },
-  { id: 'wire',     label: '送電線', icon: '🗼', cost: 5 },
-  { id: 'res',      label: '住宅地', icon: '🏠', cost: 100 },
-  { id: 'com',      label: '商業地', icon: '🏬', cost: 100 },
-  { id: 'ind',      label: '工業地', icon: '🏭', cost: 100 },
-  { id: 'power',    label: '発電所', icon: '⚡', cost: 3000 },
-  { id: 'police',   label: '警察署', icon: '🚓', cost: 500 },
-  { id: 'fire_st',  label: '消防署', icon: '🚒', cost: 500 },
-  { id: 'park',     label: '公園',   icon: '🌳', cost: 50 },
-  { id: 'bulldoze', label: '整地',   icon: '🚜', cost: 1 },
+  { id: 'pan',      label: '移動',     icon: '✋', cost: 0 },
+  { id: 'road',     label: '道路',     icon: '🛣️', cost: 10 },
+  { id: 'rail',     label: '線路',     icon: '🚃', cost: 20 },
+  { id: 'wire',     label: '送電線',   icon: '🗼', cost: 5 },
+  { id: 'res',      label: '住宅地',   icon: '🏠', cost: 100 },
+  { id: 'com',      label: '商業地',   icon: '🏬', cost: 100 },
+  { id: 'ind',      label: '工業地',   icon: '🏭', cost: 100 },
+  { id: 'power',    label: '発電所',   icon: '⚡', cost: 3000 },
+  { id: 'nuclear',  label: '原子力',   icon: '☢️', cost: 5000 },
+  { id: 'police',   label: '警察署',   icon: '🚓', cost: 500 },
+  { id: 'fire_st',  label: '消防署',   icon: '🚒', cost: 500 },
+  { id: 'park',     label: '公園',     icon: '🌳', cost: 50 },
+  { id: 'stadium',  label: 'スタジアム', icon: '🏟️', cost: 3000 },
+  { id: 'seaport',  label: '港',       icon: '⚓', cost: 3000 },
+  { id: 'airport',  label: '空港',     icon: '✈️', cost: 5000 },
+  { id: 'bulldoze', label: '整地',     icon: '🚜', cost: 1 },
 ];
 const TOOL_TILE = {
-  road: T.ROAD, wire: T.WIRE, res: T.RES, com: T.COM, ind: T.IND,
-  power: T.POWER, police: T.POLICE, fire_st: T.FIRE_ST, park: T.PARK,
+  road: T.ROAD, rail: T.RAIL, wire: T.WIRE,
+  res: T.RES, com: T.COM, ind: T.IND,
+  power: T.POWER, nuclear: T.NUCLEAR, police: T.POLICE, fire_st: T.FIRE_ST,
+  park: T.PARK, stadium: T.STADIUM, seaport: T.SEAPORT, airport: T.AIRPORT,
 };
 
 // 人口マイルストーン
@@ -90,9 +106,10 @@ const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
 const rnd = Math.random;
 
 function isZone(t) { return t === T.RES || t === T.COM || t === T.IND; }
+function isBig(t) { return BIG[t] !== undefined; }
 function conducts(t) {
   return t === T.WIRE || t === T.POWER || t === T.POLICE ||
-         t === T.FIRE_ST || isZone(t);
+         t === T.FIRE_ST || isZone(t) || isBig(t);
 }
 function flammable(t) {
   return isZone(t) || t === T.TREE || t === T.PARK ||
@@ -150,10 +167,11 @@ function computePower() {
   const queue = [];
   let capacity = 0;
   for (let i = 0; i < W * H; i++) {
-    if (g.t[i] === T.POWER) {
+    if (g.t[i] === T.POWER || g.t[i] === T.NUCLEAR) {
       g.powered[i] = 1;
       queue.push(i);
-      capacity += PLANT_CAPACITY;
+      if (g.t[i] === T.POWER) capacity += PLANT_CAPACITY;
+      else if (g.lvl[i] === 0) capacity += NUCLEAR_CAPACITY; // 2×2のうちアンカーのみ容量加算
     }
   }
   let used = queue.length;
@@ -448,6 +466,36 @@ function toolCost(toolId) {
   return TOOLS.find((t) => t.id === toolId).cost;
 }
 
+// マルチタイル建物のアンカー(左上)座標を求める
+function bigAnchor(tx, ty) {
+  const size = BIG[g.t[idx(tx, ty)]];
+  const p = g.lvl[idx(tx, ty)]; // 足元内の位置 dy*size+dx
+  return [tx - (p % size), ty - Math.floor(p / size)];
+}
+
+// (tx,ty)を左上として size×size の建物を建てられるか
+function canPlaceBig(tx, ty, size) {
+  for (let dy = 0; dy < size; dy++) {
+    for (let dx = 0; dx < size; dx++) {
+      if (!inB(tx + dx, ty + dy)) return false;
+      const t = g.t[idx(tx + dx, ty + dy)];
+      if (t !== T.GRASS && t !== T.TREE) return false;
+    }
+  }
+  return true;
+}
+
+// 足元が水に面しているか(港の建設条件)
+function touchesWater(tx, ty, size) {
+  for (let dy = -1; dy <= size; dy++) {
+    for (let dx = -1; dx <= size; dx++) {
+      if (dy >= 0 && dy < size && dx >= 0 && dx < size) continue;
+      if (inB(tx + dx, ty + dy) && g.t[idx(tx + dx, ty + dy)] === T.WATER) return true;
+    }
+  }
+  return false;
+}
+
 function placeTool(tx, ty) {
   if (!inB(tx, ty)) return;
   const i = idx(tx, ty);
@@ -456,9 +504,23 @@ function placeTool(tx, ty) {
   if (currentTool === 'bulldoze') {
     if (cur === T.GRASS || cur === T.WATER) return;
     if (!spend(1)) return;
-    g.t[i] = T.GRASS;
-    g.lvl[i] = 0;
-    g.fireT[i] = 0;
+    if (isBig(cur)) {
+      // マルチタイル建物は一括撤去
+      const size = BIG[cur];
+      const [ax, ay] = bigAnchor(tx, ty);
+      for (let dy = 0; dy < size; dy++) {
+        for (let dx = 0; dx < size; dx++) {
+          const ni = idx(ax + dx, ay + dy);
+          g.t[ni] = T.GRASS;
+          g.lvl[ni] = 0;
+          g.fireT[ni] = 0;
+        }
+      }
+    } else {
+      g.t[i] = T.GRASS;
+      g.lvl[i] = 0;
+      g.fireT[i] = 0;
+    }
     updateHUD();
     return;
   }
@@ -467,10 +529,35 @@ function placeTool(tx, ty) {
   if (tileType === undefined) return;
   if (cur === tileType) return;
 
-  // 道路・送電線は水上にも建設できる(橋・水上線、費用3倍)
+  // マルチタイル建物(タップ位置を左上として建設)
+  if (isBig(tileType)) {
+    const size = BIG[tileType];
+    if (!canPlaceBig(tx, ty, size)) {
+      toast(`⛔ ${size}×${size}の空き地が必要です`);
+      return;
+    }
+    if (tileType === T.SEAPORT && !touchesWater(tx, ty, size)) {
+      toast('⚓ 港は水辺にしか建設できません');
+      return;
+    }
+    if (!spend(toolCost(currentTool))) return;
+    for (let dy = 0; dy < size; dy++) {
+      for (let dx = 0; dx < size; dx++) {
+        const ni = idx(tx + dx, ty + dy);
+        g.t[ni] = tileType;
+        g.lvl[ni] = dy * size + dx;
+        g.fireT[ni] = 0;
+      }
+    }
+    if (tileType === T.NUCLEAR) computePower();
+    updateHUD();
+    return;
+  }
+
+  // 道路・線路・送電線は水上にも建設できる(橋・水上線、費用3倍)
   let cost = toolCost(currentTool);
   if (cur === T.WATER) {
-    if (tileType !== T.ROAD && tileType !== T.WIRE) return;
+    if (tileType !== T.ROAD && tileType !== T.WIRE && tileType !== T.RAIL) return;
     cost *= 3;
   } else if (cur !== T.GRASS && cur !== T.TREE) {
     // 既存の構造物の上には建てられない(先に整地が必要)
@@ -480,7 +567,7 @@ function placeTool(tx, ty) {
 
   if (!spend(cost)) return;
   g.t[i] = tileType;
-  // 水上に建てた道路・送電線は橋になる(lvl=1を橋フラグとして使う)
+  // 水上に建てた道路・線路・送電線は橋になる(lvl=1を橋フラグとして使う)
   g.lvl[i] = cur === T.WATER ? 1 : 0;
   g.fireT[i] = 0;
   if (tileType === T.POWER) computePower();
@@ -724,6 +811,48 @@ function drawWireTile(c, ts, mask, bridge) {
   c.fillRect(px + ts * 0.19, GY - ts * 0.14, Math.max(1, ts * 0.06), Math.max(1, ts * 0.08));
 }
 
+// 線路:隣接マスクに応じて枕木とレールの向きが変わる
+function drawRailTile(c, ts, mask, bridge) {
+  if (bridge) groundWater(c, ts); else groundGrass(c, ts, 0);
+  const GY = ts;
+  const m = mask === 0 ? 10 : mask;
+  // 砂利の路盤
+  const pad = ts * 0.22;
+  c.fillStyle = bridge ? '#6e6257' : '#8a7f6e';
+  c.fillRect(pad, GY + pad, ts - 2 * pad, ts - 2 * pad);
+  if (m & 1) c.fillRect(pad, GY, ts - 2 * pad, pad + 1);
+  if (m & 4) c.fillRect(pad, GY + ts - pad - 1, ts - 2 * pad, pad + 1);
+  if (m & 8) c.fillRect(0, GY + pad, pad + 1, ts - 2 * pad);
+  if (m & 2) c.fillRect(ts - pad - 1, GY + pad, pad + 1, ts - 2 * pad);
+  const tie = Math.max(1, ts * 0.07);   // 枕木の太さ
+  const railW = Math.max(1, ts * 0.06); // レールの太さ
+  const r1 = ts * 0.38, r2 = ts * 0.56; // 2本のレール位置
+  const horiz = m === 10 || m === 2 || m === 8;
+  const vert = m === 5 || m === 1 || m === 4;
+  c.fillStyle = '#5d4a36';
+  if (horiz) {
+    for (let x = ts * 0.06; x < ts - 2; x += ts * 0.22) {
+      c.fillRect(x, GY + ts * 0.3, tie, ts * 0.4);
+    }
+  } else if (vert) {
+    for (let y = GY + ts * 0.06; y < GY + ts - 2; y += ts * 0.22) {
+      c.fillRect(ts * 0.3, y, ts * 0.4, tie);
+    }
+  }
+  c.fillStyle = '#aeb6bd';
+  if (horiz) {
+    c.fillRect(0, GY + r1, ts, railW);
+    c.fillRect(0, GY + r2, ts, railW);
+  } else if (vert) {
+    c.fillRect(r1, GY, railW, ts);
+    c.fillRect(r2, GY, railW, ts);
+  } else {
+    // 交差・分岐は両方向のレールを描く
+    if (m & 8 || m & 2) { c.fillRect(0, GY + r1, ts, railW); c.fillRect(0, GY + r2, ts, railW); }
+    if (m & 1 || m & 4) { c.fillRect(r1, GY, railW, ts); c.fillRect(r2, GY, railW, ts); }
+  }
+}
+
 // 未開発の区画(色付きの更地+ラベル)
 function zonePlot(c, ts, fill, border, label, labelColor) {
   groundGrass(c, ts, 0);
@@ -748,16 +877,63 @@ function zoneGroundDev(c, ts, fill, border) {
   c.strokeRect(0.5, ts + 0.5, ts - 1, ts - 1);
 }
 
+// マルチタイル建物のスプライト(幅size*ts × 高さ(size+1)*ts、上1タイルがはみ出し分)
+// 暫定のプレースホルダー描画。本格的なグラフィックは個別関数で差し替える
+function bigSpritePlaceholder(c, ts, size, label, wall, wallDark, roof) {
+  const w = size * ts;
+  // 地面(舗装)
+  c.fillStyle = '#b0b4b8';
+  c.fillRect(1, ts + 1, w - 2, size * ts - 2);
+  c.strokeStyle = '#7d8186';
+  c.lineWidth = 1;
+  c.strokeRect(1.5, ts + 1.5, w - 3, size * ts - 3);
+  // 建物本体
+  const m = ts * 0.18;
+  const bw = w - 2 * m;
+  const baseY = ts + size * ts - m;
+  const wallH = ts * 0.8;
+  const wallTop = baseY - wallH;
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  c.fillRect(m + ts * 0.08, baseY - ts * 0.06, bw, ts * 0.12);
+  c.fillStyle = wall;
+  c.fillRect(m, wallTop, bw, wallH);
+  c.fillStyle = wallDark;
+  c.fillRect(m + bw - ts * 0.14, wallTop, ts * 0.14, wallH);
+  c.fillStyle = roof;
+  c.fillRect(m, wallTop - ts * 0.35, bw, ts * 0.35);
+  c.fillStyle = 'rgba(255,255,255,0.2)';
+  c.fillRect(m, wallTop - ts * 0.35, bw, ts * 0.09);
+  c.fillStyle = '#fff';
+  c.font = 'bold ' + Math.max(7, Math.floor(ts * 0.34)) + 'px sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.fillText(label, m + bw / 2, wallTop + wallH * 0.45);
+}
+
 function tileSprite(type, lvl, variant, ts) {
   const key = type + '_' + lvl + '_' + variant + '_' + ts;
   let sp = spriteCache.get(key);
   if (sp) return sp;
   if (spriteCache.size > 800) spriteCache.clear();
 
+  const size = BIG[type] || 1;
   sp = document.createElement('canvas');
-  sp.width = ts;
-  sp.height = ts * 2;
+  sp.width = ts * size;
+  sp.height = ts * (size + 1);
   const c = sp.getContext('2d');
+
+  if (size > 1) {
+    const styles = {
+      [T.NUCLEAR]: ['原子力', '#7d858d', '#646b72', '#4a4e54'],
+      [T.STADIUM]: ['スタジアム', '#c9a86a', '#ab8c52', '#8d6e63'],
+      [T.SEAPORT]: ['港', '#7a93a8', '#5f7689', '#4a5d6d'],
+      [T.AIRPORT]: ['空港', '#9aa5b1', '#7e8894', '#5f6873'],
+    };
+    const st = styles[type] || ['?', '#999', '#777', '#555'];
+    bigSpritePlaceholder(c, ts, size, st[0], st[1], st[2], st[3]);
+    spriteCache.set(key, sp);
+    return sp;
+  }
 
   switch (type) {
     case T.GRASS:
@@ -775,6 +951,17 @@ function tileSprite(type, lvl, variant, ts) {
       break;
     case T.WIRE:
       drawWireTile(c, ts, variant, lvl === 1);
+      break;
+    case T.RAIL:
+      drawRailTile(c, ts, variant, lvl === 1);
+      break;
+    case T.FLOOD:
+      // 洪水(明るい水色で land との違いを出す)
+      c.fillStyle = '#5b9be0';
+      c.fillRect(0, ts, ts, ts);
+      c.fillStyle = 'rgba(255,255,255,0.35)';
+      c.fillRect(ts * 0.1, ts * 1.3, ts * 0.35, Math.max(1, ts * 0.07));
+      c.fillRect(ts * 0.5, ts * 1.65, ts * 0.35, Math.max(1, ts * 0.07));
       break;
     case T.RES: {
       if (lvl === 0) { zonePlot(c, ts, 'rgba(129,199,132,0.45)', '#2e7d32', '住', '#1b5e20'); break; }
@@ -968,11 +1155,20 @@ function connMask(x, y, type) {
     if (!inB(nx, ny)) return false;
     const t = g.t[idx(nx, ny)];
     if (type === T.ROAD) return t === T.ROAD;
-    return t === T.WIRE || t === T.POWER;
+    if (type === T.RAIL) return t === T.RAIL;
+    return t === T.WIRE || t === T.POWER || t === T.NUCLEAR;
   };
   return (match(x, y - 1) ? 1 : 0) | (match(x + 1, y) ? 2 : 0) |
          (match(x, y + 1) ? 4 : 0) | (match(x - 1, y) ? 8 : 0);
 }
+
+/* --- 描画拡張フック(各システムの実装側で上書きする) --- */
+// 交通量の多い道路に車を描く
+let renderCars = function (ts, x0, y0, x1, y1) {};
+// 移動型の災害(竜巻・怪獣)を描く
+let renderActors = function (ts) {};
+// データマップのオーバーレイを描く
+let renderOverlay = function (ts, x0, y0, x1, y1) {};
 
 function draw() {
   const ts = Math.max(4, Math.round(BASE_TILE * cam.zoom));
@@ -980,8 +1176,9 @@ function draw() {
   cx.fillStyle = '#142014';
   cx.fillRect(0, 0, vw, vh);
 
-  const x0 = Math.max(0, Math.floor(cam.x / ts));
-  const y0 = Math.max(0, Math.floor(cam.y / ts));
+  // マルチタイル建物のアンカーが画面外でも足元が見えるよう、左・上に1タイル余分に走査
+  const x0 = Math.max(0, Math.floor(cam.x / ts) - 1);
+  const y0 = Math.max(0, Math.floor(cam.y / ts) - 1);
   const x1 = Math.min(W - 1, Math.ceil((cam.x + vw) / ts));
   // 建物が上にはみ出して見えるよう、下端の1行先まで描く
   const y1 = Math.min(H - 1, Math.ceil((cam.y + vh) / ts) + 1);
@@ -995,18 +1192,23 @@ function draw() {
       const t = g.t[i];
       let lvl = g.lvl[i];
       let variant = 0;
+      // マルチタイル建物はアンカー(左上)だけが足元全体のスプライトを描く
+      if (isBig(t) && lvl !== 0) continue;
       if (t === T.GRASS) lvl = (x * 7 + y * 13) % 2;
-      else if (t === T.ROAD || t === T.WIRE) variant = connMask(x, y, t);
+      else if (t === T.ROAD || t === T.WIRE || t === T.RAIL) variant = connMask(x, y, t);
       const px = Math.round(x * ts - cam.x);
       const py = Math.round(y * ts - cam.y);
       cx.drawImage(tileSprite(t, lvl, variant, ts), px, py - ts);
 
       if (blink && !g.powered[i] &&
-          (isZone(t) || t === T.POLICE || t === T.FIRE_ST)) {
+          (isZone(t) || t === T.POLICE || t === T.FIRE_ST || isBig(t))) {
         bolts.push([px, py]);
       }
     }
   }
+
+  renderCars(ts, x0, y0, x1, y1);
+  renderActors(ts);
 
   // 電気が来ていないマーク(建物に隠れないよう最後に描く)
   for (const [px, py] of bolts) {
@@ -1016,6 +1218,8 @@ function draw() {
     cx.fill();
     boltShape(cx, px + ts * 0.3, py + ts * 0.3, ts * 0.42, '#ffeb3b');
   }
+
+  renderOverlay(ts, x0, y0, x1, y1);
   requestAnimationFrame(draw);
 }
 
@@ -1046,7 +1250,8 @@ function tileInfo(tx, ty) {
   if (!inB(tx, ty)) return;
   const i = idx(tx, ty);
   const names = ['草地', '水', '森', '道路', '送電線', '住宅地', '商業地',
-                 '工業地', '発電所', '警察署', '消防署', '公園', 'がれき', '火災'];
+                 '工業地', '発電所', '警察署', '消防署', '公園', 'がれき', '火災',
+                 '線路', '洪水', '原子力発電所', 'スタジアム', '港', '空港'];
   let msg = names[g.t[i]];
   if (isZone(g.t[i])) {
     msg += ` Lv.${g.lvl[i]}` + (g.powered[i] ? '' : '(電気なし)') +
@@ -1100,7 +1305,8 @@ cv.addEventListener('pointermove', (e) => {
     if (currentTool === 'pan') {
       cam.x -= dx; cam.y -= dy;
       clampCamera();
-    } else {
+    } else if (!isBig(TOOL_TILE[currentTool])) {
+      // マルチタイル建物はドラッグ連続建設の対象外
       const [tx, ty] = screenToTile(e.clientX, e.clientY);
       if (lastBuildTile && (tx !== lastBuildTile[0] || ty !== lastBuildTile[1])) {
         placeLine(lastBuildTile[0], lastBuildTile[1], tx, ty);
