@@ -16,6 +16,8 @@
     <div class="hud-item" id="hud-funds">💰 0</div>
     <div class="hud-item" id="hud-pop">👥 0</div>
     <div class="hud-item" id="hud-date">1990年1月</div>
+    <div class="hud-item" id="hud-approval">😊50%</div>
+    <div class="hud-item hud-overlay-badge hidden" id="hud-overlay-badge"></div>
     <div id="rci">
       <div class="rci-col"><div class="rci-bar-wrap"><div class="rci-bar r" id="bar-r"></div></div><span>住</span></div>
       <div class="rci-col"><div class="rci-bar-wrap"><div class="rci-bar c" id="bar-c"></div></div><span>商</span></div>
@@ -40,6 +42,10 @@
       </div>
     </div>
     <div class="menu-row"><button id="btn-save" class="menu-btn">💾 セーブ</button></div>
+    <div class="menu-row"><button id="btn-open-budget" class="menu-btn">📊 予算</button></div>
+    <div class="menu-row"><button id="btn-open-disaster" class="menu-btn">🌋 災害</button></div>
+    <div class="menu-row"><button id="btn-open-eval" class="menu-btn">😊 市民評価</button></div>
+    <div class="menu-row"><button id="btn-open-map" class="menu-btn">🗺️ データマップ</button></div>
     <div class="menu-row"><button id="btn-help" class="menu-btn">❓ 遊び方</button></div>
     <div class="menu-row"><button id="btn-title" class="menu-btn">🏠 タイトルへ戻る</button></div>
     <div class="menu-row"><button id="btn-close-menu" class="menu-btn">✕ 閉じる</button></div>
@@ -71,6 +77,117 @@
       <button id="btn-continue" class="title-btn">▶ つづきから</button>
       <button id="btn-new" class="title-btn">★ はじめから</button>
     </div>
+  </div>
+
+  <!-- 予算ウィンドウ -->
+  <div id="budget-panel" class="panel hidden">
+    <h2>📊 予算ウィンドウ</h2>
+    <div class="budget-section">
+      <div class="budget-label">前年度の収支</div>
+      <div class="menu-row budget-fin-row">
+        <span>税収</span><span id="fin-tax" class="fin-val">0</span>
+      </div>
+      <div class="menu-row budget-fin-row">
+        <span>道路費</span><span id="fin-road" class="fin-val">0</span>
+      </div>
+      <div class="menu-row budget-fin-row">
+        <span>警察費</span><span id="fin-police" class="fin-val">0</span>
+      </div>
+      <div class="menu-row budget-fin-row">
+        <span>消防費</span><span id="fin-fire" class="fin-val">0</span>
+      </div>
+      <div class="menu-row budget-fin-row">
+        <span>その他支出</span><span id="fin-other" class="fin-val">0</span>
+      </div>
+      <div class="menu-row budget-fin-row budget-funds-row">
+        <span>現在の資金</span><span id="budget-funds" class="fin-val funds-val">0</span>
+      </div>
+    </div>
+    <div class="budget-section">
+      <div class="budget-label">予算配分(0〜100%)</div>
+      <div class="menu-row">
+        <span>🛣️ 道路</span>
+        <div class="budget-ctrl">
+          <button class="budget-btn" data-target="road" data-dir="-1">−</button>
+          <span id="budget-road-val" class="budget-val">100%</span>
+          <button class="budget-btn" data-target="road" data-dir="1">＋</button>
+        </div>
+      </div>
+      <div class="menu-row">
+        <span>🚓 警察</span>
+        <div class="budget-ctrl">
+          <button class="budget-btn" data-target="police" data-dir="-1">−</button>
+          <span id="budget-police-val" class="budget-val">100%</span>
+          <button class="budget-btn" data-target="police" data-dir="1">＋</button>
+        </div>
+      </div>
+      <div class="menu-row">
+        <span>🚒 消防</span>
+        <div class="budget-ctrl">
+          <button class="budget-btn" data-target="fire" data-dir="-1">−</button>
+          <span id="budget-fire-val" class="budget-val">100%</span>
+          <button class="budget-btn" data-target="fire" data-dir="1">＋</button>
+        </div>
+      </div>
+    </div>
+    <div class="menu-row">
+      <label class="check-label">
+        <input type="checkbox" id="budget-autoshow" checked>
+        毎年1月に自動で開く
+      </label>
+    </div>
+    <div class="menu-row"><button id="btn-close-budget" class="menu-btn">✕ 閉じる</button></div>
+  </div>
+
+  <!-- 災害メニュー -->
+  <div id="disaster-panel" class="panel hidden">
+    <h2>🌋 災害メニュー</h2>
+    <div class="menu-row"><button class="menu-btn disaster-btn" data-kind="fire">🔥 火事</button></div>
+    <div class="menu-row"><button class="menu-btn disaster-btn" data-kind="flood">🌊 洪水</button></div>
+    <div class="menu-row"><button class="menu-btn disaster-btn" data-kind="quake">🌋 地震</button></div>
+    <div class="menu-row"><button class="menu-btn disaster-btn" data-kind="tornado">🌪️ 竜巻</button></div>
+    <div class="menu-row"><button class="menu-btn disaster-btn" data-kind="monster">👾 怪獣</button></div>
+    <div class="menu-row">
+      <label class="check-label">
+        <input type="checkbox" id="auto-disaster" checked>
+        自動災害を有効にする
+      </label>
+    </div>
+    <div class="menu-row"><button id="btn-close-disaster" class="menu-btn">✕ 閉じる</button></div>
+  </div>
+
+  <!-- 市民評価パネル -->
+  <div id="eval-panel" class="panel hidden">
+    <h2>😊 市民評価</h2>
+    <div class="eval-approval-wrap">
+      <span id="eval-approval" class="eval-approval">50%</span>
+      <span class="eval-approval-label">支持率</span>
+    </div>
+    <div class="menu-row eval-stat-row">
+      <span>都市スコア</span><span id="eval-score" class="fin-val">500</span>
+    </div>
+    <div class="menu-row eval-stat-row">
+      <span>人口</span><span id="eval-pop" class="fin-val">0</span>
+    </div>
+    <div class="eval-problems-label">市民の不満</div>
+    <ul id="eval-problems" class="eval-problems-list"></ul>
+    <div class="menu-row"><button id="btn-close-eval" class="menu-btn">✕ 閉じる</button></div>
+  </div>
+
+  <!-- データマップ選択 -->
+  <div id="map-panel" class="panel hidden">
+    <h2>🗺️ データマップ</h2>
+    <div class="map-options">
+      <button class="menu-btn map-opt-btn active-map" data-mode="none">表示なし</button>
+      <button class="menu-btn map-opt-btn" data-mode="power">⚡ 電力</button>
+      <button class="menu-btn map-opt-btn" data-mode="pollution">🏭 公害</button>
+      <button class="menu-btn map-opt-btn" data-mode="crime">🚔 犯罪</button>
+      <button class="menu-btn map-opt-btn" data-mode="landvalue">🏠 地価</button>
+      <button class="menu-btn map-opt-btn" data-mode="traffic">🚗 交通量</button>
+      <button class="menu-btn map-opt-btn" data-mode="police">🚓 警察カバー</button>
+      <button class="menu-btn map-opt-btn" data-mode="fire">🚒 消防カバー</button>
+    </div>
+    <div class="menu-row"><button id="btn-close-map" class="menu-btn">✕ 閉じる</button></div>
   </div>
 
   <!-- トースト通知 -->

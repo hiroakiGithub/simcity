@@ -49,6 +49,11 @@ const EXPOSE = [
   'tileSprite', 'draw', 'cam', 'connMask', 'roadNear', 'pollution', 'landValue',
   'fireCov', 'policeCov', 'traffic', 'crime', 'updateTraffic', 'updateCrime',
   'actorsStep', 'triggerDisaster', 'computeEvaluation', 'SAVE_KEY',
+  // UIパネル関数(B担当)
+  'openBudgetPanel', 'closeBudgetPanel',
+  'openDisasterPanel', 'closeDisasterPanel',
+  'openEvalPanel', 'closeEvalPanel',
+  'openMapPanel', 'closeMapPanel',
 ];
 
 function createGame(opts = {}) {

@@ -94,6 +94,8 @@ const g = {
   eval: { score: 0, approval: 50, problems: [] },
   // v2: 画面揺れカウンタ(描画担当が使用)
   shakeT: 0,
+  // B: データマップオーバーレイモード(セーブ対象外)
+  overlayMode: 'none',
 };
 
 // シミュレーション用の作業マップ(セーブ対象外、毎月再計算)
@@ -1799,6 +1801,27 @@ function updateHUD() {
   $('bar-c').style.height = Math.round(Math.max(0, g.demand.c) * 100) + '%';
   $('bar-i').style.height = Math.round(Math.max(0, g.demand.i) * 100) + '%';
   $('tax-value').textContent = g.taxRate + '%';
+  // 支持率をHUDに表示
+  $('hud-approval').textContent = '😊' + g.eval.approval + '%';
+  // オーバーレイバッジ
+  const badge = $('hud-overlay-badge');
+  if (g.overlayMode && g.overlayMode !== 'none') {
+    const modeLabels = {
+      power: '⚡電力', pollution: '🏭公害', crime: '🚔犯罪',
+      landvalue: '🏠地価', traffic: '🚗交通', police: '🚓警察', fire: '🚒消防',
+    };
+    badge.textContent = modeLabels[g.overlayMode] || g.overlayMode;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+  // pendingBudget 消費: 1月に自動で予算ウィンドウを開く
+  if (g.pendingBudget) {
+    g.pendingBudget = false;
+    if (g.budget.autoShow && g.running) {
+      openBudgetPanel();
+    }
+  }
 }
 
 /* =========================================================
@@ -1907,6 +1930,93 @@ cv.addEventListener('wheel', (e) => {
 document.addEventListener('contextmenu', (e) => e.preventDefault());
 
 /* =========================================================
+ * パネル開閉ヘルパー
+ * ========================================================= */
+
+// パネルを開いている間のゲーム速度退避(予算ウィンドウ用)
+let _budgetPrevSpeed = 1;
+
+function openBudgetPanel() {
+  // ゲームを一時停止(現在の速度を覚えて speed=0 にする)
+  _budgetPrevSpeed = g.speed;
+  if (g.running && g.speed > 0) setSpeed(0);
+
+  // 前年度収支を反映
+  $('fin-tax').textContent    = Math.round(g.lastFin.tax).toLocaleString();
+  $('fin-road').textContent   = Math.round(g.lastFin.road).toLocaleString();
+  $('fin-police').textContent = Math.round(g.lastFin.police).toLocaleString();
+  $('fin-fire').textContent   = Math.round(g.lastFin.fire).toLocaleString();
+  $('fin-other').textContent  = Math.round(g.lastFin.other).toLocaleString();
+  $('budget-funds').textContent = g.funds.toLocaleString();
+
+  // 予算%スライダーを反映
+  $('budget-road-val').textContent   = g.budget.road   + '%';
+  $('budget-police-val').textContent = g.budget.police + '%';
+  $('budget-fire-val').textContent   = g.budget.fire   + '%';
+
+  // チェックボックスを反映
+  $('budget-autoshow').checked = g.budget.autoShow;
+
+  $('budget-panel').classList.remove('hidden');
+}
+
+function closeBudgetPanel() {
+  $('budget-panel').classList.add('hidden');
+  // ゲームを開く前の速度に復元
+  if (g.running) setSpeed(_budgetPrevSpeed);
+}
+
+function openDisasterPanel() {
+  // 自動災害チェックボックスを反映
+  $('auto-disaster').checked = g.autoDisaster;
+  $('disaster-panel').classList.remove('hidden');
+}
+
+function closeDisasterPanel() {
+  $('disaster-panel').classList.add('hidden');
+}
+
+function openEvalPanel() {
+  // 最新の評価を反映
+  $('eval-approval').textContent = g.eval.approval + '%';
+  $('eval-score').textContent    = g.eval.score.toLocaleString();
+  $('eval-pop').textContent      = g.pop.toLocaleString();
+
+  const ul = $('eval-problems');
+  ul.innerHTML = '';
+  if (g.eval.problems.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'no-problems';
+    li.textContent = '特になし';
+    ul.appendChild(li);
+  } else {
+    for (const prob of g.eval.problems) {
+      const li = document.createElement('li');
+      li.textContent = prob;
+      ul.appendChild(li);
+    }
+  }
+
+  $('eval-panel').classList.remove('hidden');
+}
+
+function closeEvalPanel() {
+  $('eval-panel').classList.add('hidden');
+}
+
+function openMapPanel() {
+  // 現在のオーバーレイモードに合わせてボタンのアクティブ状態を更新
+  document.querySelectorAll('.map-opt-btn').forEach((btn) => {
+    btn.classList.toggle('active-map', btn.dataset.mode === g.overlayMode);
+  });
+  $('map-panel').classList.remove('hidden');
+}
+
+function closeMapPanel() {
+  $('map-panel').classList.add('hidden');
+}
+
+/* =========================================================
  * UI構築・イベント
  * ========================================================= */
 function buildToolbar() {
@@ -1948,6 +2058,80 @@ $('tax-up').addEventListener('click', () => {
 });
 
 $('btn-save').addEventListener('click', () => saveGame(false));
+
+// ===== 予算ウィンドウ =====
+$('btn-open-budget').addEventListener('click', () => {
+  $('menu-panel').classList.add('hidden');
+  openBudgetPanel();
+});
+
+$('btn-close-budget').addEventListener('click', closeBudgetPanel);
+
+// 予算% ステッパー(−/+)
+document.querySelectorAll('.budget-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const target = btn.dataset.target; // 'road' | 'police' | 'fire'
+    const dir    = parseInt(btn.dataset.dir, 10); // -1 | +1
+    g.budget[target] = clamp(g.budget[target] + dir * 10, 0, 100);
+    $('budget-' + target + '-val').textContent = g.budget[target] + '%';
+  });
+});
+
+// autoShow チェックボックス
+$('budget-autoshow').addEventListener('change', (e) => {
+  g.budget.autoShow = e.target.checked;
+});
+
+// HUDの支持率タップで評価パネルを開く
+$('hud-approval').addEventListener('click', () => {
+  if (g.running) openEvalPanel();
+});
+
+// ===== 災害メニュー =====
+$('btn-open-disaster').addEventListener('click', () => {
+  $('menu-panel').classList.add('hidden');
+  openDisasterPanel();
+});
+
+$('btn-close-disaster').addEventListener('click', closeDisasterPanel);
+
+document.querySelectorAll('.disaster-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    triggerDisaster(btn.dataset.kind);
+    closeDisasterPanel();
+  });
+});
+
+$('auto-disaster').addEventListener('change', (e) => {
+  g.autoDisaster = e.target.checked;
+});
+
+// ===== 市民評価パネル =====
+$('btn-open-eval').addEventListener('click', () => {
+  $('menu-panel').classList.add('hidden');
+  openEvalPanel();
+});
+
+$('btn-close-eval').addEventListener('click', closeEvalPanel);
+
+// ===== データマップ選択 =====
+$('btn-open-map').addEventListener('click', () => {
+  $('menu-panel').classList.add('hidden');
+  openMapPanel();
+});
+
+$('btn-close-map').addEventListener('click', closeMapPanel);
+
+document.querySelectorAll('.map-opt-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    g.overlayMode = btn.dataset.mode;
+    // アクティブ表示を切り替え
+    document.querySelectorAll('.map-opt-btn').forEach((b) =>
+      b.classList.toggle('active-map', b.dataset.mode === g.overlayMode));
+    updateHUD();
+    closeMapPanel();
+  });
+});
 
 $('btn-help').addEventListener('click', () => {
   $('menu-panel').classList.add('hidden');
@@ -1998,6 +2182,7 @@ function newGame() {
   g.actors = [];
   g.eval = { score: 0, approval: 50, problems: [] };
   g.shakeT = 0;
+  g.overlayMode = 'none';
 }
 
 function startGame() {
