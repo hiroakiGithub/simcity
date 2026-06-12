@@ -16,10 +16,10 @@
 ### 交通
 - `const traffic = new Uint16Array(W*H)`(セーブ対象外)
 - `updateTraffic()`: 全タイル `traffic[i] = (traffic[i]*0.7)|0` で減衰後、
-  発展済み(lvl>0)かつ通電中の区画ごとに、チェビシェフ距離2以内の ROAD タイルへ `lvl*3` を加算(上限999)。RAILには加算しない(線路は渋滞しない)
-- 渋滞しきい値 `CONGESTION = 120`
+  発展済み(lvl>0)かつ通電中の区画ごとに、チェビシェフ距離2以内の ROAD タイルへ `lvl*3` を加算(上限999)。RAILには加算しない(線路は渋滞しない)。距離2以内にRAILがある区画は鉄道通勤とみなし道路交通を発生させない
+- 渋滞しきい値 `CONGESTION = 150`
 - `roadNear` は RAIL も対象に含める(道路または線路が距離2以内で輸送アクセスあり)
-- `zoneGrowth()`: 区画の周囲5×5にROADがあり、その**すべて**が渋滞(traffic>CONGESTION)なら成長確率×0.4+毎月4%で衰退。線路アクセスのみの区画は渋滞ペナルティなし
+- `zoneGrowth()`: 区画の周囲5×5にROADがあり、その**すべて**が渋滞(traffic>CONGESTION)なら成長確率×0.5+毎月3%で衰退。線路アクセスのみの区画は渋滞ペナルティなし
 
 ### 犯罪と警察・消防の予算
 - `const crime = new Int16Array(W*H)`、`const policeCov = new Int16Array(W*H)`(セーブ対象外)

@@ -9,6 +9,7 @@
 const W = 64, H = 64;          // マップサイズ(タイル)
 const BASE_TILE = 16;          // 基本タイルピクセル
 const SAVE_KEY = 'machizukuri_save_v1';
+const CONGESTION = 150;          // 交通渋滞しきい値
 const START_FUNDS = 20000;
 const START_YEAR = 1990;
 const MAX_LEVEL = 4;           // 区画の最大発展レベル
@@ -77,6 +78,22 @@ const g = {
   demand: { r: 0, c: 0, i: 0 },   // 正規化済み需要 -1〜1
   speed: 1,                       // 0=停止 1=普通 2=高速
   running: false,
+  // v2: 予算(0〜100%)
+  budget: { road: 100, police: 100, fire: 100, autoShow: true },
+  // v2: 年度財政(月次累積)
+  finYear: { tax: 0, road: 0, police: 0, fire: 0, other: 0 },
+  // v2: 前年度財政
+  lastFin: { tax: 0, road: 0, police: 0, fire: 0, other: 0 },
+  // v2: 予算ウィンドウ表示フラグ(UI側が消費)
+  pendingBudget: false,
+  // v2: 自動災害フラグ
+  autoDisaster: true,
+  // v2: 移動型災害アクター(セーブ対象外)
+  actors: [],
+  // v2: 市民評価
+  eval: { score: 0, approval: 50, problems: [] },
+  // v2: 画面揺れカウンタ(描画担当が使用)
+  shakeT: 0,
 };
 
 // シミュレーション用の作業マップ(セーブ対象外、毎月再計算)
@@ -84,6 +101,12 @@ const roadNear = new Uint8Array(W * H);
 const pollution = new Int16Array(W * H);
 const landValue = new Int16Array(W * H);
 const fireCov = new Uint8Array(W * H);
+// v2: 交通量・犯罪・警察カバレッジ(セーブ対象外)
+const traffic = new Uint16Array(W * H);
+const crime = new Int16Array(W * H);
+const policeCov = new Int16Array(W * H);
+// v2: 需要ゲートヒント間隔管理(セーブ不要)
+const g_hintAt = {};
 
 /* ===== カメラ・入力状態 ===== */
 const cam = { x: 0, y: 0, zoom: 1.5 };
@@ -212,34 +235,109 @@ function computeMaps() {
   pollution.fill(0);
   landValue.fill(0);
   fireCov.fill(0);
+  policeCov.fill(0);
+
+  // 予算%に基づく半径計算
+  const policeR = Math.round(6 * g.budget.police / 100);
+  const fireR   = Math.round(8 * g.budget.fire   / 100);
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = idx(x, y);
       const t = g.t[i];
-      if (t === T.ROAD) {
-        // 道路から2タイル以内が「道路近接」
+      if (t === T.ROAD || t === T.RAIL) {
+        // 道路・線路から2タイル以内が「道路近接」(RAILも輸送アクセスに含める)
         for (let dy = -2; dy <= 2; dy++) {
           for (let dx = -2; dx <= 2; dx++) {
             if (inB(x + dx, y + dy)) roadNear[idx(x + dx, y + dy)] = 1;
           }
         }
-      } else if (t === T.IND) {
+      }
+      if (t === T.IND) {
         stamp(pollution, x, y, 4, 14 * g.lvl[i] + 6, true);
       } else if (t === T.POWER) {
         stamp(pollution, x, y, 4, 40, true);
       } else if (t === T.FIRE) {
         stamp(pollution, x, y, 3, 30, true);
-      } else if (t === T.PARK) {
+      }
+      if (t === T.PARK) {
         stamp(landValue, x, y, 3, 14, true);
       } else if (t === T.TREE) {
         stamp(landValue, x, y, 1, 3, false);
       } else if (t === T.POLICE && g.powered[i]) {
         stamp(landValue, x, y, 6, 8, true);
+        // 警察カバレッジ(予算%でスケール)
+        if (policeR > 0) stamp(policeCov, x, y, policeR, 40, true);
       } else if (t === T.FIRE_ST && g.powered[i]) {
         stamp(landValue, x, y, 6, 4, true);
-        stamp(fireCov, x, y, 8, 1, false);
+        if (fireR > 0) stamp(fireCov, x, y, fireR, 1, false);
       }
+    }
+  }
+}
+
+/* =========================================================
+ * 交通シミュレーション
+ * ========================================================= */
+function updateTraffic() {
+  // 全タイル減衰(0.7倍)
+  for (let i = 0; i < W * H; i++) {
+    traffic[i] = (traffic[i] * 0.7) | 0;
+  }
+  // 発展済み・通電中の区画からチェビシェフ距離2以内のROADへ交通量を加算
+  // RAILには加算しない(線路は渋滞しない)
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = idx(x, y);
+      if (g.lvl[i] <= 0 || !g.powered[i]) continue;
+      if (!isZone(g.t[i])) continue;
+      // 線路が近くにあれば住民は鉄道で通勤するため、道路交通を発生させない
+      let nearRail = false;
+      for (let dy = -2; dy <= 2 && !nearRail; dy++) {
+        for (let dx = -2; dx <= 2 && !nearRail; dx++) {
+          if (inB(x + dx, y + dy) && g.t[idx(x + dx, y + dy)] === T.RAIL) nearRail = true;
+        }
+      }
+      if (nearRail) continue;
+      const add = g.lvl[i] * 3;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (!inB(nx, ny)) continue;
+          const ni = idx(nx, ny);
+          if (g.t[ni] === T.ROAD) {
+            traffic[ni] = Math.min(999, traffic[ni] + add);
+          }
+        }
+      }
+    }
+  }
+}
+
+/* =========================================================
+ * 犯罪シミュレーション
+ * ========================================================= */
+function updateCrime() {
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = idx(x, y);
+      if (!isZone(g.t[i]) || g.lvl[i] <= 0) {
+        crime[i] = 0;
+        continue;
+      }
+      // 周囲8マスの住宅lvl合計(人口密度ボーナス)
+      let resDensity = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (!inB(nx, ny)) continue;
+          const ni = idx(nx, ny);
+          if (g.t[ni] === T.RES) resDensity += g.lvl[ni];
+        }
+      }
+      const raw = g.lvl[i] * 10 + resDensity - landValue[i] * 0.3 - policeCov[i];
+      crime[i] = clamp(Math.round(raw), 0, 250);
     }
   }
 }
@@ -264,6 +362,42 @@ function calcStats() {
   g.demand.r = clamp(rRaw / 300, -1, 1);
   g.demand.c = clamp(cRaw / 300, -1, 1);
   g.demand.i = clamp(iRaw / 300, -1, 1);
+
+  // v2: 需要ゲート — 特殊建物がないと需要上限を制限
+  applyDemandGates(cJobs, iJobs);
+}
+
+// 特殊建物の存在チェック(アンカーが存在し通電していること)
+function hasBigBuilding(type) {
+  for (let i = 0; i < W * H; i++) {
+    if (g.t[i] === type && g.lvl[i] === 0 && g.powered[i]) return true;
+  }
+  return false;
+}
+
+// 需要ゲートの適用と24ヶ月ヒントトースト
+function applyDemandGates(cJobs, iJobs) {
+  const hints = [
+    { key: 'stadium', check: () => g.pop >= 1200 && !hasBigBuilding(T.STADIUM),
+      gate: () => { g.demand.r = Math.min(g.demand.r, 0.05); },
+      msg: '🏟️ 住民はスタジアムを求めています' },
+    { key: 'seaport', check: () => iJobs >= 500 && !hasBigBuilding(T.SEAPORT),
+      gate: () => { g.demand.i = Math.min(g.demand.i, 0.05); },
+      msg: '⚓ 工業の発展には港が必要です' },
+    { key: 'airport', check: () => cJobs >= 400 && !hasBigBuilding(T.AIRPORT),
+      gate: () => { g.demand.c = Math.min(g.demand.c, 0.05); },
+      msg: '✈️ 商業の発展には空港が必要です' },
+  ];
+  for (const h of hints) {
+    if (h.check()) {
+      h.gate();
+      // 24ヶ月に1回までヒントトースト
+      if (g_hintAt[h.key] === undefined || g.month - g_hintAt[h.key] >= 24) {
+        g_hintAt[h.key] = g.month;
+        toast(h.msg);
+      }
+    }
+  }
 }
 
 /* =========================================================
@@ -292,6 +426,43 @@ function zoneGrowth() {
     let envMult = 1 + clamp(landValue[i], 0, 60) * 0.005;
     if (t === T.RES) {
       envMult *= clamp(1 - pollution[i] / 250, 0.1, 1); // 公害は住宅に大打撃
+    }
+
+    // v2: 犯罪の影響(COM/RES)
+    if (t === T.COM) envMult *= clamp(1 - crime[i] / 350, 0.2, 1);
+    else if (t === T.RES) envMult *= clamp(1 - crime[i] / 500, 0.3, 1);
+
+    // v2: 渋滞ペナルティ(道路アクセスのみの区画で、周囲5×5のROADが全て渋滞)
+    // 線路アクセスのみの区画は渋滞ペナルティなし
+    let congested = false;
+    {
+      const x = i % W, y = (i / W) | 0;
+      let roadCount = 0, congestedCount = 0;
+      let hasRoadOnly = false; // 道路が存在するか
+      let hasRailOnly = false; // 線路が存在するか(道路なし)
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (!inB(nx, ny)) continue;
+          const ni = idx(nx, ny);
+          if (g.t[ni] === T.ROAD) {
+            hasRoadOnly = true;
+            roadCount++;
+            if (traffic[ni] > CONGESTION) congestedCount++;
+          } else if (g.t[ni] === T.RAIL) {
+            hasRailOnly = true;
+          }
+        }
+      }
+      // 線路アクセスのみなら渋滞ペナルティなし
+      // 道路があり、その全てが渋滞なら渋滞ペナルティ適用
+      if (hasRoadOnly && roadCount > 0 && congestedCount === roadCount) {
+        congested = true;
+      }
+    }
+    if (congested) {
+      envMult *= 0.5;
+      if (g.lvl[i] > 0 && rnd() < 0.03) g.lvl[i]--; // 毎月3%で衰退
     }
 
     if (d > 0 && g.lvl[i] < MAX_LEVEL) {
@@ -345,24 +516,375 @@ function fireStep() {
 }
 
 /* =========================================================
+ * アクター(洪水減衰・竜巻・怪獣)
+ * ========================================================= */
+function actorsStep() {
+  // FLOODタイルの減衰と拡散
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = idx(x, y);
+      if (g.t[i] !== T.FLOOD) continue;
+      g.fireT[i]--;
+      if (g.fireT[i] <= 0) {
+        g.t[i] = T.GRASS;
+        g.lvl[i] = 0;
+        g.fireT[i] = 0;
+      } else if (g.fireT[i] > 2 && rnd() < 0.15) {
+        // 隣接タイルへ拡大
+        const dirs = [[x+1,y],[x-1,y],[x,y+1],[x,y-1]];
+        const d = dirs[Math.floor(rnd() * dirs.length)];
+        if (inB(d[0], d[1])) {
+          const ni = idx(d[0], d[1]);
+          if (g.t[ni] !== T.WATER && g.t[ni] !== T.FLOOD) {
+            if (isBig(g.t[ni])) {
+              const [ax, ay] = bigAnchor(d[0], d[1]);
+              const size = BIG[g.t[ni]];
+              for (let bdy = 0; bdy < size; bdy++) {
+                for (let bdx = 0; bdx < size; bdx++) {
+                  const bni = idx(ax+bdx, ay+bdy);
+                  g.t[bni] = T.FLOOD;
+                  g.lvl[bni] = 0;
+                  g.fireT[bni] = Math.max(1, g.fireT[i] - 1);
+                }
+              }
+            } else {
+              g.t[ni] = T.FLOOD;
+              g.lvl[ni] = 0;
+              g.fireT[ni] = Math.max(1, g.fireT[i] - 1);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // アクター(竜巻・怪獣)の移動・破壊
+  for (const a of g.actors) {
+    if (a.ttl <= 0) continue;
+    a.ttl--;
+
+    if (a.kind === 'tornado') {
+      // ランダムに1歩移動
+      let dx, dy;
+      do {
+        dx = Math.floor(rnd() * 3) - 1;
+        dy = Math.floor(rnd() * 3) - 1;
+      } while (dx === 0 && dy === 0);
+      const nx = a.x + dx, ny = a.y + dy;
+      if (!inB(nx, ny)) { a.ttl = 0; continue; }
+      a.x = nx; a.y = ny;
+      const ni = idx(nx, ny);
+      if (g.t[ni] !== T.WATER) {
+        if (isBig(g.t[ni])) {
+          const [ax, ay] = bigAnchor(nx, ny);
+          const size = BIG[g.t[ni]];
+          for (let bdy = 0; bdy < size; bdy++) {
+            for (let bdx = 0; bdx < size; bdx++) {
+              const bni = idx(ax+bdx, ay+bdy);
+              g.t[bni] = T.RUBBLE;
+              g.lvl[bni] = 0;
+              g.fireT[bni] = 0;
+            }
+          }
+        } else {
+          g.t[ni] = T.RUBBLE;
+          g.lvl[ni] = 0;
+          g.fireT[ni] = 0;
+        }
+      }
+
+    } else if (a.kind === 'monster') {
+      // 目標(最大公害地点)へ1歩移動(±1の揺らぎあり)
+      let maxP = -1;
+      for (let pi = 0; pi < W * H; pi++) {
+        if (pollution[pi] > maxP) { maxP = pollution[pi]; a.tx = pi % W; a.ty = (pi / W) | 0; }
+      }
+      const ddx = a.tx - a.x, ddy = a.ty - a.y;
+      let mx = ddx === 0 ? 0 : (ddx > 0 ? 1 : -1);
+      let my = ddy === 0 ? 0 : (ddy > 0 ? 1 : -1);
+      // 揺らぎ
+      if (rnd() < 0.3) mx += (Math.floor(rnd() * 3) - 1);
+      if (rnd() < 0.3) my += (Math.floor(rnd() * 3) - 1);
+      mx = clamp(mx, -1, 1);
+      my = clamp(my, -1, 1);
+      const nx = clamp(a.x + mx, 0, W - 1);
+      const ny = clamp(a.y + my, 0, H - 1);
+      a.x = nx; a.y = ny;
+      const ni = idx(nx, ny);
+      // 通過タイル破壊
+      if (isBig(g.t[ni])) {
+        const [ax, ay] = bigAnchor(nx, ny);
+        const size = BIG[g.t[ni]];
+        for (let bdy = 0; bdy < size; bdy++) {
+          for (let bdx = 0; bdx < size; bdx++) {
+            const bni = idx(ax+bdx, ay+bdy);
+            g.t[bni] = T.RUBBLE;
+            g.lvl[bni] = 0;
+            g.fireT[bni] = 0;
+          }
+        }
+      } else if (g.t[ni] !== T.WATER) {
+        g.t[ni] = T.RUBBLE;
+        g.lvl[ni] = 0;
+        g.fireT[ni] = 0;
+      }
+      // 隣接タイルに発火
+      for (const [fnx, fny] of [[nx+1,ny],[nx-1,ny],[nx,ny+1],[nx,ny-1]]) {
+        if (!inB(fnx, fny)) continue;
+        const fni = idx(fnx, fny);
+        if (flammable(g.t[fni]) && rnd() < 0.3) {
+          g.t[fni] = T.FIRE;
+          g.lvl[fni] = 0;
+          g.fireT[fni] = 3 + Math.floor(rnd() * 3);
+        }
+      }
+    }
+  }
+
+  // 死んだアクターを除去
+  g.actors = g.actors.filter(a => a.ttl > 0);
+}
+
+/* =========================================================
+ * 災害発生
+ * ========================================================= */
+function triggerDisaster(kind) {
+  const developed = [];
+  for (let i = 0; i < W * H; i++) {
+    if (isZone(g.t[i]) && g.lvl[i] > 0) developed.push(i);
+  }
+
+  if (kind === 'fire') {
+    if (developed.length === 0) return;
+    const i = developed[Math.floor(rnd() * developed.length)];
+    g.t[i] = T.FIRE;
+    g.lvl[i] = 0;
+    g.fireT[i] = 4 + Math.floor(rnd() * 4);
+    toast('🔥 火事が発生しました!');
+
+  } else if (kind === 'flood') {
+    // Find water tiles adjacent to land
+    const waterEdge = [];
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (g.t[idx(x,y)] !== T.WATER) continue;
+        for (const [nx,ny] of [[x+1,y],[x-1,y],[x,y+1],[x,y-1]]) {
+          if (inB(nx,ny) && g.t[idx(nx,ny)] !== T.WATER) { waterEdge.push(idx(x,y)); break; }
+        }
+      }
+    }
+    if (waterEdge.length === 0) return;
+    const wi = waterEdge[Math.floor(rnd() * waterEdge.length)];
+    const wx = wi % W, wy = (wi / W) | 0;
+    // Flood land tiles within distance 2
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const nx = wx+dx, ny = wy+dy;
+        if (!inB(nx,ny)) continue;
+        const ni = idx(nx,ny);
+        if (g.t[ni] === T.WATER) continue;
+        // Handle multi-tile buildings
+        if (isBig(g.t[ni])) {
+          const [ax,ay] = bigAnchor(nx,ny);
+          const size = BIG[g.t[ni]];
+          for (let bdy = 0; bdy < size; bdy++) {
+            for (let bdx = 0; bdx < size; bdx++) {
+              const bni = idx(ax+bdx, ay+bdy);
+              g.t[bni] = T.FLOOD;
+              g.lvl[bni] = 0;
+              g.fireT[bni] = 4 + Math.floor(rnd() * 4);
+            }
+          }
+        } else {
+          g.t[ni] = T.FLOOD;
+          g.lvl[ni] = 0;
+          g.fireT[ni] = 4 + Math.floor(rnd() * 4);
+        }
+      }
+    }
+    toast('🌊 洪水が発生しました!');
+
+  } else if (kind === 'quake') {
+    g.shakeT = 60;
+    const hits = 8 + Math.floor(rnd() * 8);
+    for (let h = 0; h < hits; h++) {
+      const qx = Math.floor(rnd() * W), qy = Math.floor(rnd() * H);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = qx+dx, ny = qy+dy;
+          if (!inB(nx,ny)) continue;
+          const ni = idx(nx,ny);
+          if (g.t[ni] === T.WATER) continue;
+          if (rnd() < 0.6) {
+            // Destroy - handle multi-tile buildings
+            if (isBig(g.t[ni])) {
+              const ttype = g.t[ni];
+              const [ax,ay] = bigAnchor(nx,ny);
+              const size = BIG[ttype];
+              // 原子力ならメルトダウン判定(建物につき1回)
+              const meltdown = ttype === T.NUCLEAR && rnd() < 0.3;
+              for (let bdy = 0; bdy < size; bdy++) {
+                for (let bdx = 0; bdx < size; bdx++) {
+                  const bni = idx(ax+bdx, ay+bdy);
+                  if (meltdown) {
+                    g.t[bni] = T.FIRE;
+                    g.lvl[bni] = 0;
+                    g.fireT[bni] = 6 + Math.floor(rnd() * 4);
+                  } else {
+                    g.t[bni] = T.RUBBLE;
+                    g.lvl[bni] = 0;
+                    g.fireT[bni] = 0;
+                  }
+                }
+              }
+              if (meltdown) toast('☢️ 原子力発電所がメルトダウン!');
+            } else {
+              const wasZone = isZone(g.t[ni]) && g.lvl[ni] > 0;
+              g.t[ni] = T.RUBBLE;
+              g.lvl[ni] = 0;
+              g.fireT[ni] = 0;
+              if (wasZone && rnd() < 0.25) {
+                g.t[ni] = T.FIRE;
+                g.fireT[ni] = 4 + Math.floor(rnd() * 4);
+              }
+            }
+          }
+        }
+      }
+    }
+    toast('🌋 地震が発生しました!');
+
+  } else if (kind === 'tornado') {
+    // Spawn from a random map edge
+    let sx, sy;
+    const edge = Math.floor(rnd() * 4);
+    if (edge === 0) { sx = Math.floor(rnd() * W); sy = 0; }
+    else if (edge === 1) { sx = Math.floor(rnd() * W); sy = H - 1; }
+    else if (edge === 2) { sx = 0; sy = Math.floor(rnd() * H); }
+    else { sx = W - 1; sy = Math.floor(rnd() * H); }
+    g.actors.push({ kind: 'tornado', x: sx, y: sy, ttl: 24, tx: 0, ty: 0 });
+    toast('🌪️ 竜巻が発生しました!');
+
+  } else if (kind === 'monster') {
+    let sx, sy;
+    const edge = Math.floor(rnd() * 4);
+    if (edge === 0) { sx = Math.floor(rnd() * W); sy = 0; }
+    else if (edge === 1) { sx = Math.floor(rnd() * W); sy = H - 1; }
+    else if (edge === 2) { sx = 0; sy = Math.floor(rnd() * H); }
+    else { sx = W - 1; sy = Math.floor(rnd() * H); }
+    // Find max pollution target
+    let maxP = -1, tx = W >> 1, ty = H >> 1;
+    for (let pi = 0; pi < W * H; pi++) {
+      if (pollution[pi] > maxP) { maxP = pollution[pi]; tx = pi % W; ty = (pi / W) | 0; }
+    }
+    g.actors.push({ kind: 'monster', x: sx, y: sy, ttl: 30, tx, ty });
+    toast('👾 怪獣が現れました!');
+  }
+}
+
+/* =========================================================
+ * 市民評価
+ * ========================================================= */
+function computeEvaluation() {
+  let totalCrime = 0, totalPoll = 0, zonedCount = 0;
+  let congestedRoads = 0, totalRoads = 0;
+  let unpoweredZones = 0, totalZones = 0;
+
+  for (let i = 0; i < W * H; i++) {
+    if (isZone(g.t[i]) && g.lvl[i] > 0) {
+      totalCrime += crime[i];
+      totalPoll += pollution[i];
+      zonedCount++;
+      if (!g.powered[i]) unpoweredZones++;
+    }
+    if (isZone(g.t[i])) totalZones++;
+    if (g.t[i] === T.ROAD) {
+      totalRoads++;
+      if (traffic[i] > CONGESTION) congestedRoads++;
+    }
+  }
+
+  const avgCrime = zonedCount > 0 ? totalCrime / zonedCount : 0;
+  const avgPoll = zonedCount > 0 ? totalPoll / zonedCount : 0;
+  const congestionRate = totalRoads > 0 ? congestedRoads / totalRoads : 0;
+  const unemployed = Math.max(0, (g.pop * 0.6 - g.jobs)) / Math.max(1, g.pop * 0.6);
+  const unpoweredRate = totalZones > 0 ? unpoweredZones / totalZones : 0;
+
+  const approval = clamp(Math.round(
+    75 - avgCrime * 0.15 - avgPoll * 0.1
+    - congestionRate * 40 - unemployed * 50
+    - (g.taxRate - 7) * 2.5
+  ), 0, 100);
+
+  // problems: collect factors, sort descending, take top 3
+  const factors = [
+    { label: '犯罪', v: avgCrime * 0.15 },
+    { label: '公害', v: avgPoll * 0.1 },
+    { label: '交通渋滞', v: congestionRate * 40 },
+    { label: '税金', v: Math.max(0, (g.taxRate - 7) * 2.5) },
+    { label: '失業', v: unemployed * 50 },
+    { label: '電力不足', v: unpoweredRate * 30 },
+  ];
+  factors.sort((a, b) => b.v - a.v);
+  const problems = factors.slice(0, 3).filter(f => f.v > 0).map(f => f.label);
+
+  const score = clamp(Math.round(g.pop * 0.5 + approval * 3 + 500), 0, 9999);
+
+  g.eval = { score, approval, problems };
+}
+
+/* =========================================================
  * 財政(毎月)
  * ========================================================= */
 function economy() {
-  let roads = 0, wires = 0, police = 0, fireSts = 0, plants = 0, parks = 0;
+  let roads = 0, rails = 0, wires = 0, police = 0, fireSts = 0, plants = 0;
+  let nuclearAnchors = 0, parks = 0, stadiums = 0, seaports = 0, airports = 0;
   for (let i = 0; i < W * H; i++) {
     switch (g.t[i]) {
-      case T.ROAD: roads++; break;
-      case T.WIRE: wires++; break;
-      case T.POLICE: police++; break;
+      case T.ROAD:    roads++; break;
+      case T.RAIL:    rails++; break;
+      case T.WIRE:    wires++; break;
+      case T.POLICE:  police++; break;
       case T.FIRE_ST: fireSts++; break;
-      case T.POWER: plants++; break;
-      case T.PARK: parks++; break;
+      case T.POWER:   plants++; break;
+      case T.NUCLEAR: if (g.lvl[i] === 0) nuclearAnchors++; break;
+      case T.PARK:    parks++; break;
+      case T.STADIUM: if (g.lvl[i] === 0) stadiums++; break;
+      case T.SEAPORT: if (g.lvl[i] === 0) seaports++; break;
+      case T.AIRPORT: if (g.lvl[i] === 0) airports++; break;
     }
   }
   const income = (g.pop * 1.2 + g.jobs * 0.6) * g.taxRate / 100 / 2;
-  const expense = roads * 0.1 + wires * 0.03 +
-                  police * 15 + fireSts * 12 + plants * 25 + parks * 2;
-  g.funds += Math.round(income - expense);
+
+  const roadExp   = roads * 0.10 * (g.budget.road / 100) + rails * 0.20 * (g.budget.road / 100);
+  const policeExp = police * 15 * (g.budget.police / 100);
+  const fireExp   = fireSts * 12 * (g.budget.fire / 100);
+  const otherExp  = plants * 25 + nuclearAnchors * 40 + parks * 2
+                    + stadiums * 20 + seaports * 15 + airports * 30;
+
+  g.finYear.tax    += income;
+  g.finYear.road   += roadExp;
+  g.finYear.police += policeExp;
+  g.finYear.fire   += fireExp;
+  g.finYear.other  += otherExp;
+
+  // 道路劣化: 予算が低いと道路・線路が破損する
+  if (g.budget.road < 60) {
+    const prob = (60 - g.budget.road) / 4000;
+    let degraded = false;
+    for (let i = 0; i < W * H; i++) {
+      if ((g.t[i] === T.ROAD || g.t[i] === T.RAIL) && rnd() < prob) {
+        g.t[i] = T.RUBBLE;
+        g.lvl[i] = 0;
+        g.fireT[i] = 0;
+        degraded = true;
+      }
+    }
+    if (degraded && rnd() < 0.05) toast('🚧 道路が傷んでいます');
+  }
+
+  const totalExpense = roadExp + policeExp + fireExp + otherExp;
+  g.funds += Math.round(income - totalExpense);
   if (g.funds < 0) toast('⚠️ 財政が赤字です!税率や支出を見直しましょう');
 }
 
@@ -382,13 +904,39 @@ function checkMilestones() {
 function simMonth() {
   computePower();
   computeMaps();
+  updateTraffic();
+  updateCrime();
   calcStats();
   zoneGrowth();
   fireStep();
+  actorsStep();
   economy();
+  computeEvaluation();
   g.month++;
   checkMilestones();
-  if (g.month % 12 === 0) saveGame(true); // 毎年自動セーブ
+  // 1月(毎年1月): 年度財政退避・リセット・予算ウィンドウ表示フラグ
+  if (g.month % 12 === 0) {
+    g.lastFin = Object.assign({}, g.finYear);
+    g.finYear = { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+    g.pendingBudget = true;
+  }
+  // 12ヶ月ごと自動セーブ
+  if (g.month % 12 === 0) saveGame(true);
+  // 自動災害
+  if (g.month > 24 && g.autoDisaster && rnd() < 0.004) {
+    const r = rnd();
+    if (r < 0.50) triggerDisaster('fire');
+    else if (r < 0.70) triggerDisaster('flood');
+    else if (r < 0.85) triggerDisaster('tornado');
+    else if (r < 0.95) triggerDisaster('quake');
+    else {
+      // monster only when avg pollution is high
+      let totalP = 0, cnt = 0;
+      for (let i = 0; i < W * H; i++) { if (pollution[i] > 0) { totalP += pollution[i]; cnt++; } }
+      const avgP = cnt > 0 ? totalP / cnt : 0;
+      if (avgP > 20 || rnd() < 0.3) triggerDisaster('monster');
+    }
+  }
   updateHUD();
 }
 
@@ -411,7 +959,7 @@ function saveGame(auto) {
   if (!g.running) return;
   try {
     const data = {
-      v: 1,
+      v: 2,
       funds: g.funds,
       month: g.month,
       taxRate: g.taxRate,
@@ -419,6 +967,10 @@ function saveGame(auto) {
       t: Array.from(g.t),
       lvl: Array.from(g.lvl),
       fireT: Array.from(g.fireT),
+      budget: Object.assign({}, g.budget),
+      autoDisaster: g.autoDisaster,
+      finYear: Object.assign({}, g.finYear),
+      lastFin: Object.assign({}, g.lastFin),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     if (!auto) toast('💾 セーブしました');
@@ -434,9 +986,8 @@ function hasSave() {
 function loadGame() {
   try {
     const data = JSON.parse(localStorage.getItem(SAVE_KEY));
-    if (!data || data.v !== 1 || !Array.isArray(data.t) || data.t.length !== W * H) {
-      return false;
-    }
+    if (!data || !Array.isArray(data.t) || data.t.length !== W * H) return false;
+    if (data.v !== 1 && data.v !== 2) return false;
     g.t.set(data.t);
     g.lvl.set(data.lvl);
     g.fireT.set(data.fireT);
@@ -444,6 +995,18 @@ function loadGame() {
     g.month = data.month;
     g.taxRate = data.taxRate;
     g.milestone = data.milestone || 0;
+    // v2フィールド(v1の場合はデフォルト値を補う)
+    g.budget = data.budget ? Object.assign({}, data.budget)
+                           : { road: 100, police: 100, fire: 100, autoShow: true };
+    g.autoDisaster = data.autoDisaster !== undefined ? data.autoDisaster : true;
+    g.finYear = data.finYear ? Object.assign({}, data.finYear)
+                             : { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+    g.lastFin = data.lastFin ? Object.assign({}, data.lastFin)
+                             : { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+    g.actors = [];
+    g.eval = { score: 0, approval: 50, problems: [] };
+    g.pendingBudget = false;
+    g.shakeT = 0;
     return true;
   } catch (e) {
     return false;
@@ -1427,6 +1990,14 @@ function newGame() {
   g.pop = 0;
   g.jobs = 0;
   g.demand = { r: 0, c: 0, i: 0 };
+  g.budget = { road: 100, police: 100, fire: 100, autoShow: true };
+  g.finYear = { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+  g.lastFin = { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+  g.pendingBudget = false;
+  g.autoDisaster = true;
+  g.actors = [];
+  g.eval = { score: 0, approval: 50, problems: [] };
+  g.shakeT = 0;
 }
 
 function startGame() {
