@@ -254,9 +254,16 @@ console.log('[systems.test] 4. 需要ゲート(スタジアム)');
   // マップを直接操作して人口1200以上を作る
   // RES lvl=4 で 1タイル当たり 4*16=64人
   // 1200/64 = 19タイル必要
-  const spot = findLand(G, 30, 6);
-  assert(spot !== null, '需要ゲートテスト用の草地エリアが存在する');
-  const [bx, by] = spot;
+  // ランダム地形に依存しないよう、テスト用エリアを直接整地する
+  const bx = 10, by = 20;
+  for (let y = by; y < by + 6; y++) {
+    for (let x = bx; x < bx + 30; x++) {
+      g.t[idx(x, y)] = T.GRASS;
+      g.lvl[idx(x, y)] = 0;
+      g.fireT[idx(x, y)] = 0;
+    }
+  }
+  assert(true, '需要ゲートテスト用の草地エリアを確保した');
 
   // 発電所と道路
   G.place('power', bx, by);
