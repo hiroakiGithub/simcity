@@ -175,6 +175,107 @@ function toast(msg) {
 }
 
 /* =========================================================
+ * 効果音(WebAudio。外部ファイルなし)
+ * 設定はセーブスロットとは独立してlocalStorageに保存する
+ * ========================================================= */
+const SOUND_KEY = 'machizukuri_sound';
+const sound = { enabled: true, ctx: null };
+try {
+  const savedSound = localStorage.getItem(SOUND_KEY);
+  if (savedSound !== null) sound.enabled = savedSound !== '0';
+} catch (e) {
+  // localStorageが使えない環境では既定値のまま
+}
+
+function saveSoundSetting() {
+  try {
+    localStorage.setItem(SOUND_KEY, sound.enabled ? '1' : '0');
+  } catch (e) {
+    // 何もしない
+  }
+}
+
+// 初回のユーザー操作(pointerdown)でAudioContextを遅延生成する
+// (モバイルブラウザの自動再生制限に対応するため)
+function ensureAudioContext() {
+  if (sound.ctx) return sound.ctx;
+  try {
+    const Ctor = typeof AudioContext !== 'undefined' ? AudioContext
+      : typeof webkitAudioContext !== 'undefined' ? webkitAudioContext : null;
+    if (!Ctor) return null;
+    sound.ctx = new Ctor();
+  } catch (e) {
+    sound.ctx = null;
+  }
+  return sound.ctx;
+}
+document.addEventListener('pointerdown', ensureAudioContext, { once: true });
+
+// 短い合成音を1つ鳴らす(masterGainに接続、開始からstart秒後にdur秒間鳴る)
+function playTone(ctx, master, t0, freqFrom, freqTo, start, dur, type) {
+  const osc = ctx.createOscillator();
+  const g2 = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freqFrom, t0 + start);
+  if (freqTo !== freqFrom) osc.frequency.linearRampToValueAtTime(freqTo, t0 + start + dur);
+  g2.gain.setValueAtTime(0, t0 + start);
+  g2.gain.linearRampToValueAtTime(1, t0 + start + Math.min(0.015, dur * 0.25));
+  g2.gain.linearRampToValueAtTime(0, t0 + start + dur);
+  osc.connect(g2);
+  g2.connect(master);
+  osc.start(t0 + start);
+  osc.stop(t0 + start + dur + 0.02);
+}
+
+// 効果音を鳴らす。AudioContextが無い/生成できない環境では何もしない(テスト環境向けの安全策)
+function playSound(kind) {
+  if (!sound.enabled) return;
+  try {
+    const ctx = sound.ctx;
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.value = 0.15;
+    master.connect(ctx.destination);
+
+    if (kind === 'build') {
+      playTone(ctx, master, t0, 660, 880, 0, 0.08, 'square');
+    } else if (kind === 'bulldoze') {
+      playTone(ctx, master, t0, 120, 120, 0, 0.15, 'sawtooth');
+    } else if (kind === 'money') {
+      playTone(ctx, master, t0, 880, 880, 0, 0.09, 'sine');
+      playTone(ctx, master, t0, 1320, 1320, 0.10, 0.10, 'sine');
+    } else if (kind === 'siren') {
+      // 三角波を600↔800Hzで3往復(0.2秒刻み×6区間=1.2秒)させる災害サイレン
+      const osc = ctx.createOscillator();
+      const g2 = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(600, t0);
+      const seg = 0.2;
+      for (let i = 1; i <= 6; i++) {
+        osc.frequency.linearRampToValueAtTime(i % 2 === 1 ? 800 : 600, t0 + seg * i);
+      }
+      g2.gain.setValueAtTime(0, t0);
+      g2.gain.linearRampToValueAtTime(1, t0 + 0.05);
+      g2.gain.setValueAtTime(1, t0 + 1.1);
+      g2.gain.linearRampToValueAtTime(0, t0 + 1.2);
+      osc.connect(g2);
+      g2.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + 1.22);
+    } else if (kind === 'milestone') {
+      playTone(ctx, master, t0, 523, 523, 0, 0.15, 'sine');
+      playTone(ctx, master, t0, 659, 659, 0.15, 0.15, 'sine');
+      playTone(ctx, master, t0, 784, 784, 0.30, 0.15, 'sine');
+    } else if (kind === 'error') {
+      playTone(ctx, master, t0, 180, 180, 0, 0.15, 'square');
+    }
+  } catch (e) {
+    // AudioContext非対応環境などでは無音でスキップ
+  }
+}
+
+/* =========================================================
  * マップ生成
  * ========================================================= */
 function genMap() {
@@ -690,6 +791,7 @@ function actorsStep() {
  * 災害発生
  * ========================================================= */
 function triggerDisaster(kind) {
+  playSound('siren');
   const developed = [];
   for (let i = 0; i < W * H; i++) {
     if (isZone(g.t[i]) && g.lvl[i] > 0) developed.push(i);
@@ -937,6 +1039,7 @@ function economy() {
 function checkMilestones() {
   while (g.milestone < MILESTONES.length && g.pop >= MILESTONES[g.milestone][0]) {
     toast(`🎉 人口${MILESTONES[g.milestone][0]}人達成!「${MILESTONES[g.milestone][1]}」になりました!`);
+    playSound('milestone');
     g.milestone++;
   }
 }
@@ -1101,6 +1204,7 @@ function saveGame(auto) {
     };
     localStorage.setItem(slotKey(currentSlot), JSON.stringify(data));
     if (!auto) toast('💾 セーブしました');
+    if (!auto) playSound('money');
   } catch (e) {
     toast('セーブに失敗しました');
   }
@@ -1146,6 +1250,7 @@ function loadGame() {
         }
       : { pop: [], funds: [], approval: [] };
     g.actors = [];
+    vehicles.length = 0;
     g.eval = { score: 0, approval: 50, problems: [] };
     g.pendingBudget = false;
     g.shakeT = 0;
@@ -1161,6 +1266,7 @@ function loadGame() {
 function spend(cost) {
   if (g.funds < cost) {
     toast('💸 資金が足りません');
+    playSound('error');
     return false;
   }
   g.funds -= cost;
@@ -1212,6 +1318,7 @@ function placeTool(tx, ty) {
       if (!spend(1)) return;
       g.wireOver[i] = 0;
       toast('🗼 電線を撤去しました');
+      playSound('bulldoze');
       computePower();
       updateHUD();
       return;
@@ -1219,6 +1326,7 @@ function placeTool(tx, ty) {
     g.wireOver[i] = 0; // 残留フラグの掃除
     if (cur === T.GRASS || cur === T.WATER) return;
     if (!spend(1)) return;
+    playSound('bulldoze');
     if (isBig(cur)) {
       // マルチタイル建物は一括撤去
       const size = BIG[cur];
@@ -1256,6 +1364,7 @@ function placeTool(tx, ty) {
       return;
     }
     if (!spend(toolCost(currentTool))) return;
+    playSound('build');
     for (let dy = 0; dy < size; dy++) {
       for (let dx = 0; dx < size; dx++) {
         const ni = idx(tx + dx, ty + dy);
@@ -1274,6 +1383,7 @@ function placeTool(tx, ty) {
   if (tileType === T.WIRE && (isRoadLike(cur) || cur === T.RAIL) && g.lvl[i] === 0) {
     if (g.wireOver[i]) return;
     if (!spend(toolCost(currentTool) * 2)) return;
+    playSound('build');
     g.wireOver[i] = 1;
     computePower();
     updateHUD();
@@ -1282,6 +1392,7 @@ function placeTool(tx, ty) {
   // 道路・線路を送電線の上に通す → タイルを道路/線路化して電線オーバーレイ化(費用2倍)
   if ((tileType === T.ROAD || tileType === T.RAIL) && cur === T.WIRE && g.lvl[i] === 0) {
     if (!spend(toolCost(currentTool) * 2)) return;
+    playSound('build');
     g.t[i] = tileType;
     g.lvl[i] = 0;
     g.wireOver[i] = 1;
@@ -1293,6 +1404,7 @@ function placeTool(tx, ty) {
   if ((tileType === T.ROAD && cur === T.RAIL || tileType === T.RAIL && cur === T.ROAD) &&
       g.lvl[i] === 0) {
     if (!spend(toolCost(currentTool) * 2)) return;
+    playSound('build');
     g.t[i] = T.CROSSING;
     g.lvl[i] = 0;
     updateHUD();
@@ -1311,6 +1423,7 @@ function placeTool(tx, ty) {
   }
 
   if (!spend(cost)) return;
+  playSound('build');
   g.t[i] = tileType;
   // 水上に建てた道路・線路・送電線は橋になる(lvl=1を橋フラグとして使う)
   g.lvl[i] = cur === T.WATER ? 1 : 0;
@@ -1331,6 +1444,326 @@ function placeLine(x0, y0, x1, y1) {
     const e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x += sx; }
     if (e2 < dx) { err += dx; y += sy; }
+  }
+}
+
+/* =========================================================
+ * ビークル(列車・船・飛行機)
+ * シミュレーションには影響しない見た目だけの演出。simMonthとは独立に
+ * 実時間(dt秒)で動く。セーブ対象外。
+ * ========================================================= */
+const vehicles = []; // { kind:'train'|'ship'|'plane', ... }
+const VEHICLE_TRAIN_SPEED = 2;     // タイル/秒
+const VEHICLE_SHIP_SPEED = 0.5;    // タイル/秒
+const VEHICLE_PLANE_SPEED = 6;     // タイル/秒
+const VEHICLE_MAX_TRAINS = 2;
+const VEHICLE_PLANE_INTERVAL = 20; // 秒(平均。実際は±乱数)
+const VEHICLE_DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // 北・東・南・西
+
+let vehicleLastTs = null;    // draw()側で実時間dtを計算するための前回タイムスタンプ
+let vehicleSpawnAccum = 999; // 起動直後に1回だけ即チェックする
+let vehiclePlaneTimer = VEHICLE_PLANE_INTERVAL;
+
+function railNeighbors(tx, ty) {
+  const out = [];
+  for (const [dx, dy] of VEHICLE_DIRS) {
+    const nx = tx + dx, ny = ty + dy;
+    if (inB(nx, ny) && isRailLike(g.t[idx(nx, ny)])) out.push([dx, dy]);
+  }
+  return out;
+}
+
+function waterNeighbors(tx, ty) {
+  const out = [];
+  for (const [dx, dy] of VEHICLE_DIRS) {
+    const nx = tx + dx, ny = ty + dy;
+    if (inB(nx, ny) && g.t[idx(nx, ny)] === T.WATER) out.push([dx, dy]);
+  }
+  return out;
+}
+
+// ビークルの出現条件チェック(毎フレームではなく1秒に1回程度呼ぶ)
+function vehicleSpawnCheck() {
+  // --- 列車: 線路(RAIL/CROSSING)が10タイル以上あれば編成が出現(最大2編成) ---
+  const railTiles = [];
+  for (let i = 0; i < W * H; i++) if (isRailLike(g.t[i])) railTiles.push(i);
+  const trainCount = vehicles.reduce((n, v) => n + (v.kind === 'train' ? 1 : 0), 0);
+  if (railTiles.length >= 10 && trainCount < VEHICLE_MAX_TRAINS) {
+    for (let tries = 0; tries < 20; tries++) {
+      const i = railTiles[Math.floor(rnd() * railTiles.length)];
+      const tx = i % W, ty = (i / W) | 0;
+      const dirs = railNeighbors(tx, ty);
+      if (dirs.length > 0) {
+        const [dx, dy] = dirs[Math.floor(rnd() * dirs.length)];
+        vehicles.push({ kind: 'train', tx, ty, dx, dy, progress: 0 });
+        break;
+      }
+    }
+  }
+
+  // --- 船: 港(SEAPORT)が存在すれば1隻出現 ---
+  let hasSeaport = false;
+  for (let i = 0; i < W * H; i++) { if (g.t[i] === T.SEAPORT) { hasSeaport = true; break; } }
+  const shipCount = vehicles.reduce((n, v) => n + (v.kind === 'ship' ? 1 : 0), 0);
+  if (hasSeaport && shipCount < 1) {
+    const waterTiles = [];
+    for (let i = 0; i < W * H; i++) if (g.t[i] === T.WATER) waterTiles.push(i);
+    for (let tries = 0; tries < 20 && waterTiles.length > 0; tries++) {
+      const i = waterTiles[Math.floor(rnd() * waterTiles.length)];
+      const tx = i % W, ty = (i / W) | 0;
+      const dirs = waterNeighbors(tx, ty);
+      if (dirs.length > 0) {
+        const [dx, dy] = dirs[Math.floor(rnd() * dirs.length)];
+        vehicles.push({ kind: 'ship', tx, ty, dx, dy, progress: 0 });
+        break;
+      }
+    }
+  }
+}
+
+// 空港が通電していれば、マップの端から端へ直線で横切る飛行機を1機出す
+function vehicleTrySpawnPlane() {
+  if (vehicles.some((v) => v.kind === 'plane')) return;
+  let hasPoweredAirport = false;
+  for (let i = 0; i < W * H; i++) {
+    if (g.t[i] === T.AIRPORT && g.lvl[i] === 0 && g.powered[i]) { hasPoweredAirport = true; break; }
+  }
+  if (!hasPoweredAirport) return;
+  const horizontal = rnd() < 0.5;
+  let sx, sy, ex, ey;
+  if (horizontal) {
+    sy = ey = 2 + rnd() * Math.max(1, H - 4);
+    if (rnd() < 0.5) { sx = -3; ex = W + 3; } else { sx = W + 3; ex = -3; }
+  } else {
+    sx = ex = 2 + rnd() * Math.max(1, W - 4);
+    if (rnd() < 0.5) { sy = -3; ey = H + 3; } else { sy = H + 3; ey = -3; }
+  }
+  const dist = Math.hypot(ex - sx, ey - sy) || 1;
+  vehicles.push({
+    kind: 'plane', x: sx, y: sy,
+    dx: (ex - sx) / dist, dy: (ey - sy) / dist,
+    remaining: dist,
+  });
+}
+
+// 線路タイルからタイルへ進む: 直進優先・行き止まりで反転
+function updateTrainVehicle(v, dt) {
+  if (!inB(v.tx, v.ty) || !isRailLike(g.t[idx(v.tx, v.ty)])) { v.dead = true; return; }
+  v.progress += dt * VEHICLE_TRAIN_SPEED;
+  while (v.progress >= 1) {
+    v.progress -= 1;
+    v.tx += v.dx; v.ty += v.dy;
+    if (!inB(v.tx, v.ty) || !isRailLike(g.t[idx(v.tx, v.ty)])) { v.dead = true; return; }
+    const dirs = railNeighbors(v.tx, v.ty);
+    if (dirs.length === 0) { v.dead = true; return; }
+    const straight = dirs.find((d) => d[0] === v.dx && d[1] === v.dy);
+    if (straight) {
+      v.dx = straight[0]; v.dy = straight[1];
+    } else {
+      const notBack = dirs.filter((d) => !(d[0] === -v.dx && d[1] === -v.dy));
+      const choices = notBack.length > 0 ? notBack : dirs; // 行き止まりなら反転
+      const pick = choices[Math.floor(rnd() * choices.length)];
+      v.dx = pick[0]; v.dy = pick[1];
+    }
+  }
+}
+
+// WATERタイル上をランダムウォーク
+function updateShipVehicle(v, dt) {
+  if (!inB(v.tx, v.ty) || g.t[idx(v.tx, v.ty)] !== T.WATER) { v.dead = true; return; }
+  v.progress += dt * VEHICLE_SHIP_SPEED;
+  while (v.progress >= 1) {
+    v.progress -= 1;
+    v.tx += v.dx; v.ty += v.dy;
+    if (!inB(v.tx, v.ty) || g.t[idx(v.tx, v.ty)] !== T.WATER) { v.dead = true; return; }
+    const dirs = waterNeighbors(v.tx, v.ty);
+    if (dirs.length === 0) { v.dead = true; return; }
+    const notBack = dirs.filter((d) => !(d[0] === -v.dx && d[1] === -v.dy));
+    const pool = notBack.length > 0 && rnd() < 0.85 ? notBack : dirs;
+    const pick = pool[Math.floor(rnd() * pool.length)];
+    v.dx = pick[0]; v.dy = pick[1];
+  }
+}
+
+// マップの端から端へ直線移動
+function updatePlaneVehicle(v, dt) {
+  const travel = dt * VEHICLE_PLANE_SPEED;
+  v.x += v.dx * travel;
+  v.y += v.dy * travel;
+  v.remaining -= travel;
+  if (v.remaining <= 0) v.dead = true;
+}
+
+// ビークル全体を実時間dt(秒)で更新する。simMonthとは独立、ポーズ中でも呼ばれる
+function updateVehicles(dt) {
+  if (!Number.isFinite(dt) || dt <= 0) return;
+  dt = Math.min(dt, 0.25); // タブ非アクティブから復帰した際の大ジャンプを防ぐ
+
+  vehicleSpawnAccum += dt;
+  if (vehicleSpawnAccum >= 1) {
+    vehicleSpawnAccum = 0;
+    vehicleSpawnCheck();
+  }
+
+  vehiclePlaneTimer -= dt;
+  if (vehiclePlaneTimer <= 0) {
+    vehiclePlaneTimer = VEHICLE_PLANE_INTERVAL + rnd() * 6;
+    vehicleTrySpawnPlane();
+  }
+
+  for (let vi = vehicles.length - 1; vi >= 0; vi--) {
+    const v = vehicles[vi];
+    if (v.kind === 'train') updateTrainVehicle(v, dt);
+    else if (v.kind === 'ship') updateShipVehicle(v, dt);
+    else if (v.kind === 'plane') updatePlaneVehicle(v, dt);
+    if (v.dead) vehicles.splice(vi, 1);
+  }
+}
+
+// ===== ビークル描画 =====
+
+// 列車の車両1両(進行方向に応じて縦横)+窓+落ち影
+function drawTrainCar(cxCenter, cyCenter, ts, horiz) {
+  const len = ts * 0.78, wid = ts * 0.46;
+  const w = horiz ? len : wid;
+  const h = horiz ? wid : len;
+  const x = cxCenter - w / 2, y = cyCenter - h / 2;
+  cx.fillStyle = 'rgba(0,0,0,0.3)';
+  cx.fillRect(x + w * 0.08, y + h * 0.82, w, h * 0.22);
+  cx.fillStyle = '#152048';
+  cx.fillRect(x, y, w, h);
+  cx.fillStyle = 'rgba(0,0,0,0.2)';
+  if (horiz) cx.fillRect(x, y + h * 0.72, w, h * 0.22);
+  else cx.fillRect(x + w * 0.72, y, w * 0.22, h);
+  cx.fillStyle = '#eaf4ff';
+  if (horiz) {
+    const winW = w * 0.16, winH = h * 0.4;
+    for (let k = 0; k < 3; k++) cx.fillRect(x + w * (0.12 + k * 0.3), y + h * 0.14, winW, winH);
+  } else {
+    const winW = w * 0.4, winH = h * 0.16;
+    for (let k = 0; k < 3; k++) cx.fillRect(x + w * 0.14, y + h * (0.12 + k * 0.3), winW, winH);
+  }
+}
+
+function drawVehicleTrain(v, ts) {
+  const headX = v.tx + 0.5 + v.dx * v.progress;
+  const headY = v.ty + 0.5 + v.dy * v.progress;
+  const horiz = v.dx !== 0;
+  // 2両編成: 進行方向の後ろへ1両ずつずらして描く
+  for (let i = 1; i >= 0; i--) {
+    const tileX = headX - v.dx * (0.05 + i * 0.85);
+    const tileY = headY - v.dy * (0.05 + i * 0.85);
+    const px = tileX * ts - cam.x;
+    const py = tileY * ts - cam.y;
+    drawTrainCar(px, py, ts, horiz);
+  }
+}
+
+function drawVehicleShip(v, ts) {
+  const x = v.tx + 0.5 + v.dx * v.progress;
+  const y = v.ty + 0.5 + v.dy * v.progress;
+  const px = x * ts - cam.x;
+  const py = y * ts - cam.y;
+  const angle = Math.atan2(v.dy, v.dx);
+  const len = ts * 0.85, wid = ts * 0.4;
+
+  // 航跡(進行方向の後ろへ伸びる白線)
+  cx.strokeStyle = 'rgba(255,255,255,0.5)';
+  cx.lineWidth = Math.max(1, ts * 0.04);
+  cx.beginPath();
+  cx.moveTo(px - v.dx * ts * 0.1, py - v.dy * ts * 0.1);
+  cx.lineTo(px - v.dx * ts * 0.9, py - v.dy * ts * 0.9);
+  cx.stroke();
+
+  cx.save();
+  cx.translate(px, py);
+  cx.rotate(angle);
+  // 落ち影
+  cx.fillStyle = 'rgba(0,0,0,0.25)';
+  cx.beginPath();
+  cx.ellipse(0, len * 0.12, len * 0.5, wid * 0.35, 0, 0, Math.PI * 2);
+  cx.fill();
+  // 船体(白)
+  cx.fillStyle = '#f2f2f2';
+  cx.beginPath();
+  cx.moveTo(-len * 0.5, -wid * 0.3);
+  cx.lineTo(len * 0.35, -wid * 0.3);
+  cx.lineTo(len * 0.5, 0);
+  cx.lineTo(len * 0.35, wid * 0.3);
+  cx.lineTo(-len * 0.5, wid * 0.3);
+  cx.closePath();
+  cx.fill();
+  cx.fillStyle = 'rgba(0,0,0,0.12)';
+  cx.fillRect(-len * 0.5, wid * 0.15, len * 0.85, wid * 0.15);
+  // マスト
+  cx.strokeStyle = '#888888';
+  cx.lineWidth = Math.max(1, ts * 0.05);
+  cx.beginPath();
+  cx.moveTo(0, 0);
+  cx.lineTo(0, -wid * 1.6);
+  cx.stroke();
+  cx.restore();
+}
+
+// 飛行機のシルエット(局所座標: 進行方向が+xを向く)を描く。落ち影にも使う
+function drawPlaneSilhouette(c, size, bodyColor, wingColor) {
+  c.fillStyle = bodyColor;
+  c.beginPath();
+  c.moveTo(-size * 0.5, 0);
+  c.lineTo(size * 0.3, -size * 0.05);
+  c.lineTo(size * 0.5, 0);
+  c.lineTo(size * 0.3, size * 0.05);
+  c.closePath();
+  c.fill();
+  c.fillStyle = wingColor;
+  c.beginPath();
+  c.moveTo(-size * 0.05, -size * 0.02);
+  c.lineTo(size * 0.05, -size * 0.34);
+  c.lineTo(size * 0.14, -size * 0.30);
+  c.lineTo(size * 0.02, size * 0.02);
+  c.closePath();
+  c.fill();
+  c.beginPath();
+  c.moveTo(-size * 0.05, size * 0.02);
+  c.lineTo(size * 0.05, size * 0.34);
+  c.lineTo(size * 0.14, size * 0.30);
+  c.lineTo(size * 0.02, -size * 0.02);
+  c.closePath();
+  c.fill();
+  c.beginPath();
+  c.moveTo(-size * 0.42, 0);
+  c.lineTo(-size * 0.5, -size * 0.16);
+  c.lineTo(-size * 0.38, -size * 0.14);
+  c.lineTo(-size * 0.3, 0);
+  c.closePath();
+  c.fill();
+}
+
+function drawVehiclePlane(v, ts) {
+  const px = v.x * ts - cam.x;
+  const py = v.y * ts - cam.y;
+  const angle = Math.atan2(v.dy, v.dx);
+  const size = ts * 2.4; // 高度感のため大きめ
+
+  // 濃い落ち影(位置を少しずらす)
+  cx.save();
+  cx.translate(px + ts * 0.5, py + ts * 0.6);
+  cx.rotate(angle);
+  drawPlaneSilhouette(cx, size, 'rgba(0,0,0,0.38)', 'rgba(0,0,0,0.3)');
+  cx.restore();
+
+  cx.save();
+  cx.translate(px, py);
+  cx.rotate(angle);
+  drawPlaneSilhouette(cx, size, '#f7f7f7', '#cfd6db');
+  cx.restore();
+}
+
+function renderVehicles(ts) {
+  for (const v of vehicles) {
+    if (v.kind === 'train') drawVehicleTrain(v, ts);
+    else if (v.kind === 'ship') drawVehicleShip(v, ts);
+    else if (v.kind === 'plane') drawVehiclePlane(v, ts);
   }
 }
 
@@ -2759,6 +3192,11 @@ function draw() {
   cx.fillStyle = '#142014';
   cx.fillRect(0, 0, vw, vh);
 
+  // ビークル(列車・船・飛行機)を実時間で更新する(simMonthとは独立、ポーズ中も動く)
+  const vNow = Date.now();
+  updateVehicles(vehicleLastTs === null ? 0 : (vNow - vehicleLastTs) / 1000);
+  vehicleLastTs = vNow;
+
   // 地震による画面揺れ(g.shakeT > 0 の間、世界描画全体を±5pxずらす)
   // フレームごとに g.shakeT を1減らす
   const shaking = g.shakeT > 0;
@@ -2812,6 +3250,7 @@ function draw() {
 
   renderCars(ts, x0, y0, x1, y1);
   renderActors(ts);
+  renderVehicles(ts);
 
   // 電気が来ていないマーク(建物に隠れないよう最後に描く)
   for (const [px, py] of bolts) {
@@ -2980,6 +3419,7 @@ document.addEventListener('contextmenu', (e) => e.preventDefault());
 let _budgetPrevSpeed = 1;
 
 function openBudgetPanel() {
+  playSound('money');
   // ゲームを一時停止(現在の速度を覚えて speed=0 にする)
   _budgetPrevSpeed = g.speed;
   if (g.running && g.speed > 0) setSpeed(0);
@@ -3326,6 +3766,17 @@ document.querySelectorAll('.graph-opt-btn').forEach((btn) => {
   btn.addEventListener('click', () => setGraphSeries(btn.dataset.series));
 });
 
+// ===== 効果音トグル =====
+function updateSoundButton() {
+  $('btn-sound').textContent = (sound.enabled ? '🔊' : '🔇') + ' 効果音';
+}
+$('btn-sound').addEventListener('click', () => {
+  sound.enabled = !sound.enabled;
+  saveSoundSetting();
+  updateSoundButton();
+});
+updateSoundButton();
+
 $('btn-help').addEventListener('click', () => {
   $('menu-panel').classList.add('hidden');
   $('help-panel').classList.remove('hidden');
@@ -3475,6 +3926,7 @@ function newGame(name, difficulty) {
   g.pendingBudget = false;
   g.autoDisaster = true;
   g.actors = [];
+  vehicles.length = 0;
   g.eval = { score: 0, approval: 50, problems: [] };
   g.shakeT = 0;
   g.overlayMode = 'none';

@@ -65,6 +65,10 @@ const EXPOSE = [
   'openGraphPanel', 'closeGraphPanel', 'setGraphSeries', 'drawGraph', 'graphSeries',
   // ミニマップ(データマップパネル)
   'drawMinimap', 'minimapColor', 'minimapJumpToPixel', 'MINIMAP_TILE_PX',
+  // ビークル(列車・船・飛行機、演出専用)
+  'vehicles', 'updateVehicles', 'isRailLike',
+  // 効果音
+  'sound', 'playSound', 'saveSoundSetting', 'SOUND_KEY',
 ];
 
 function createGame(opts = {}) {
