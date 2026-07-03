@@ -467,7 +467,7 @@ console.log('[systems.test] 6. セーブv2ラウンドトリップ・v1互換ロ
   const savedRaw = store[SAVE_KEY];
   assert(savedRaw !== undefined, 'セーブキーにデータが保存される');
   const savedData = JSON.parse(savedRaw);
-  assert(savedData.v === 2, 'セーブデータのバージョンがv2');
+  assert(savedData.v === 3, 'セーブデータのバージョンがv3');
   assert(savedData.budget !== undefined, 'budget が保存される');
   assert(savedData.autoDisaster === false, 'autoDisaster が保存される');
   assert(savedData.finYear !== undefined, 'finYear が保存される');

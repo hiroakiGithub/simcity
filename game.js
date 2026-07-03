@@ -24,6 +24,7 @@ const T = {
   RUBBLE: 12, FIRE: 13,
   RAIL: 14, FLOOD: 15,
   NUCLEAR: 16, STADIUM: 17, SEAPORT: 18, AIRPORT: 19,
+  CROSSING: 20, // 道路×線路の踏切
 };
 
 // マルチタイル建物のサイズ(タイル数)。lvlに足元内の位置(dy*size+dx)を
@@ -69,6 +70,7 @@ const g = {
   lvl: new Uint8Array(W * H),     // 区画の発展レベル 0〜MAX_LEVEL
   fireT: new Uint8Array(W * H),   // 火災の残り燃焼ターン
   powered: new Uint8Array(W * H), // 通電フラグ(毎月再計算)
+  wireOver: new Uint8Array(W * H), // v3: 送電線オーバーレイ(道路・線路・踏切の上を電線が横切る)
   funds: START_FUNDS,
   month: 0,                       // 開始からの経過月数
   taxRate: 7,
@@ -132,9 +134,19 @@ const rnd = Math.random;
 
 function isZone(t) { return t === T.RES || t === T.COM || t === T.IND; }
 function isBig(t) { return BIG[t] !== undefined; }
+function isRoadLike(t) { return t === T.ROAD || t === T.CROSSING; }
+function isRailLike(t) { return t === T.RAIL || t === T.CROSSING; }
 function conducts(t) {
   return t === T.WIRE || t === T.POWER || t === T.POLICE ||
          t === T.FIRE_ST || isZone(t) || isBig(t);
+}
+// タイル単位の導電判定(送電線オーバーレイも電気を通す)
+// オーバーレイは道路・線路・踏切の上にある場合のみ有効(下が壊れたら電線も失われる)
+function wireOverAt(i) {
+  return g.wireOver[i] === 1 && (isRoadLike(g.t[i]) || g.t[i] === T.RAIL);
+}
+function conductsAt(i) {
+  return conducts(g.t[i]) || wireOverAt(i);
 }
 function flammable(t) {
   return isZone(t) || t === T.TREE || t === T.PARK ||
@@ -160,6 +172,7 @@ function genMap() {
   g.t.fill(T.GRASS);
   g.lvl.fill(0);
   g.fireT.fill(0);
+  g.wireOver.fill(0);
 
   // 川:上端から下端へ蛇行させる
   let x = 8 + Math.floor(rnd() * (W - 16));
@@ -208,7 +221,7 @@ function computePower() {
     for (const [nx, ny] of neighbors) {
       if (!inB(nx, ny)) continue;
       const ni = idx(nx, ny);
-      if (!g.powered[ni] && conducts(g.t[ni])) {
+      if (!g.powered[ni] && conductsAt(ni)) {
         g.powered[ni] = 1;
         queue.push(ni);
         if (++used >= capacity) break;
@@ -247,8 +260,8 @@ function computeMaps() {
     for (let x = 0; x < W; x++) {
       const i = idx(x, y);
       const t = g.t[i];
-      if (t === T.ROAD || t === T.RAIL) {
-        // 道路・線路から2タイル以内が「道路近接」(RAILも輸送アクセスに含める)
+      if (t === T.ROAD || t === T.RAIL || t === T.CROSSING) {
+        // 道路・線路・踏切から2タイル以内が「道路近接」(RAILも輸送アクセスに含める)
         for (let dy = -2; dy <= 2; dy++) {
           for (let dx = -2; dx <= 2; dx++) {
             if (inB(x + dx, y + dy)) roadNear[idx(x + dx, y + dy)] = 1;
@@ -297,7 +310,7 @@ function updateTraffic() {
       let nearRail = false;
       for (let dy = -2; dy <= 2 && !nearRail; dy++) {
         for (let dx = -2; dx <= 2 && !nearRail; dx++) {
-          if (inB(x + dx, y + dy) && g.t[idx(x + dx, y + dy)] === T.RAIL) nearRail = true;
+          if (inB(x + dx, y + dy) && isRailLike(g.t[idx(x + dx, y + dy)])) nearRail = true;
         }
       }
       if (nearRail) continue;
@@ -307,7 +320,7 @@ function updateTraffic() {
           const nx = x + dx, ny = y + dy;
           if (!inB(nx, ny)) continue;
           const ni = idx(nx, ny);
-          if (g.t[ni] === T.ROAD) {
+          if (isRoadLike(g.t[ni])) {
             traffic[ni] = Math.min(999, traffic[ni] + add);
           }
         }
@@ -447,7 +460,7 @@ function zoneGrowth() {
           const nx = x + dx, ny = y + dy;
           if (!inB(nx, ny)) continue;
           const ni = idx(nx, ny);
-          if (g.t[ni] === T.ROAD) {
+          if (isRoadLike(g.t[ni])) {
             hasRoadOnly = true;
             roadCount++;
             if (traffic[ni] > CONGESTION) congestedCount++;
@@ -842,9 +855,11 @@ function economy() {
   let roads = 0, rails = 0, wires = 0, police = 0, fireSts = 0, plants = 0;
   let nuclearAnchors = 0, parks = 0, stadiums = 0, seaports = 0, airports = 0;
   for (let i = 0; i < W * H; i++) {
+    if (wireOverAt(i)) wires++;
     switch (g.t[i]) {
       case T.ROAD:    roads++; break;
       case T.RAIL:    rails++; break;
+      case T.CROSSING: roads++; rails++; break;
       case T.WIRE:    wires++; break;
       case T.POLICE:  police++; break;
       case T.FIRE_ST: fireSts++; break;
@@ -961,7 +976,7 @@ function saveGame(auto) {
   if (!g.running) return;
   try {
     const data = {
-      v: 2,
+      v: 3,
       funds: g.funds,
       month: g.month,
       taxRate: g.taxRate,
@@ -969,6 +984,7 @@ function saveGame(auto) {
       t: Array.from(g.t),
       lvl: Array.from(g.lvl),
       fireT: Array.from(g.fireT),
+      wireOver: Array.from(g.wireOver),
       budget: Object.assign({}, g.budget),
       autoDisaster: g.autoDisaster,
       finYear: Object.assign({}, g.finYear),
@@ -989,10 +1005,15 @@ function loadGame() {
   try {
     const data = JSON.parse(localStorage.getItem(SAVE_KEY));
     if (!data || !Array.isArray(data.t) || data.t.length !== W * H) return false;
-    if (data.v !== 1 && data.v !== 2) return false;
+    if (data.v !== 1 && data.v !== 2 && data.v !== 3) return false;
     g.t.set(data.t);
     g.lvl.set(data.lvl);
     g.fireT.set(data.fireT);
+    if (Array.isArray(data.wireOver) && data.wireOver.length === W * H) {
+      g.wireOver.set(data.wireOver);
+    } else {
+      g.wireOver.fill(0);
+    }
     g.funds = data.funds;
     g.month = data.month;
     g.taxRate = data.taxRate;
@@ -1067,6 +1088,16 @@ function placeTool(tx, ty) {
   const cur = g.t[i];
 
   if (currentTool === 'bulldoze') {
+    // 電線オーバーレイがあるタイルは、まず電線だけを撤去する
+    if (wireOverAt(i)) {
+      if (!spend(1)) return;
+      g.wireOver[i] = 0;
+      toast('🗼 電線を撤去しました');
+      computePower();
+      updateHUD();
+      return;
+    }
+    g.wireOver[i] = 0; // 残留フラグの掃除
     if (cur === T.GRASS || cur === T.WATER) return;
     if (!spend(1)) return;
     if (isBig(cur)) {
@@ -1119,6 +1150,36 @@ function placeTool(tx, ty) {
     return;
   }
 
+  // --- 立体交差の変換ルール ---
+  // 送電線を道路・線路・踏切の上に引く → 電線オーバーレイ(費用2倍)
+  if (tileType === T.WIRE && (isRoadLike(cur) || cur === T.RAIL) && g.lvl[i] === 0) {
+    if (g.wireOver[i]) return;
+    if (!spend(toolCost(currentTool) * 2)) return;
+    g.wireOver[i] = 1;
+    computePower();
+    updateHUD();
+    return;
+  }
+  // 道路・線路を送電線の上に通す → タイルを道路/線路化して電線オーバーレイ化(費用2倍)
+  if ((tileType === T.ROAD || tileType === T.RAIL) && cur === T.WIRE && g.lvl[i] === 0) {
+    if (!spend(toolCost(currentTool) * 2)) return;
+    g.t[i] = tileType;
+    g.lvl[i] = 0;
+    g.wireOver[i] = 1;
+    computePower();
+    updateHUD();
+    return;
+  }
+  // 道路×線路 → 踏切(費用2倍)
+  if ((tileType === T.ROAD && cur === T.RAIL || tileType === T.RAIL && cur === T.ROAD) &&
+      g.lvl[i] === 0) {
+    if (!spend(toolCost(currentTool) * 2)) return;
+    g.t[i] = T.CROSSING;
+    g.lvl[i] = 0;
+    updateHUD();
+    return;
+  }
+
   // 道路・線路・送電線は水上にも建設できる(橋・水上線、費用3倍)
   let cost = toolCost(currentTool);
   if (cur === T.WATER) {
@@ -1135,6 +1196,7 @@ function placeTool(tx, ty) {
   // 水上に建てた道路・線路・送電線は橋になる(lvl=1を橋フラグとして使う)
   g.lvl[i] = cur === T.WATER ? 1 : 0;
   g.fireT[i] = 0;
+  g.wireOver[i] = 0; // 残留フラグの掃除
   if (tileType === T.POWER) computePower();
   updateHUD();
 }
@@ -1416,6 +1478,100 @@ function drawRailTile(c, ts, mask, bridge) {
     if (m & 8 || m & 2) { c.fillRect(0, GY + r1, ts, railW); c.fillRect(0, GY + r2, ts, railW); }
     if (m & 1 || m & 4) { c.fillRect(r1, GY, railW, ts); c.fillRect(r2, GY, railW, ts); }
   }
+}
+
+// 踏切:道路の上を線路が横切る(roadMask/railMaskで両方の向きを表現)
+function drawCrossingTile(c, ts, roadMask, railMask) {
+  const GY = ts;
+  const rm = roadMask === 0 ? 10 : roadMask;
+  // まず道路を描く
+  drawRoadTile(c, ts, rm, false);
+  // 線路の向き(道路と直交をデフォルトに)
+  let km = railMask;
+  if (km === 0) km = (rm === 10 || rm === 2 || rm === 8) ? 5 : 10;
+  const railW = Math.max(1, ts * 0.06);
+  const r1 = ts * 0.38, r2 = ts * 0.56;
+  const railHoriz = km === 10 || km === 2 || km === 8;
+  // レール(道路を貫通)
+  c.fillStyle = '#aeb6bd';
+  if (railHoriz) {
+    c.fillRect(0, GY + r1, ts, railW);
+    c.fillRect(0, GY + r2, ts, railW);
+  } else {
+    c.fillRect(r1, GY, railW, ts);
+    c.fillRect(r2, GY, railW, ts);
+  }
+  // 踏切の警告ゼブラ(レールの両側に黄と黒の縞)
+  const zw = Math.max(1, ts * 0.08);
+  for (let k = 0; k < 3; k++) {
+    c.fillStyle = k % 2 ? '#2b2b2b' : '#ffd835';
+    if (railHoriz) {
+      c.fillRect(ts * (0.15 + 0.25 * k), GY + r1 - zw - 1, ts * 0.14, zw);
+      c.fillRect(ts * (0.15 + 0.25 * k), GY + r2 + railW + 1, ts * 0.14, zw);
+    } else {
+      c.fillRect(r1 - zw - 1, GY + ts * (0.15 + 0.25 * k), zw, ts * 0.14);
+      c.fillRect(r2 + railW + 1, GY + ts * (0.15 + 0.25 * k), zw, ts * 0.14);
+    }
+  }
+}
+
+/* --- 電線オーバーレイ(道路・線路を横切る送電線)--- */
+const wireOverCache = new Map();
+function wireOverSprite(mask, ts) {
+  const key = mask + '_' + ts;
+  let sp = wireOverCache.get(key);
+  if (sp) return sp;
+  if (wireOverCache.size > 100) wireOverCache.clear();
+  sp = document.createElement('canvas');
+  sp.width = ts;
+  sp.height = ts * 2;
+  const c = sp.getContext('2d');
+  const GY = ts;
+  const m = mask === 0 ? 5 : mask; // 孤立時は南北の電線として描く
+  const vert = (m & 5) !== 0 && (m & 10) === 0 ? true
+             : (m & 10) !== 0 && (m & 5) === 0 ? false
+             : (m & 5) !== 0; // 両方向あるときは縦を優先
+  const lw = Math.max(1, ts * 0.05);
+  // 電線の影(路面に落ちる)
+  c.strokeStyle = 'rgba(0,0,0,0.2)';
+  c.lineWidth = lw;
+  c.beginPath();
+  if (vert) { c.moveTo(ts * 0.54, GY); c.lineTo(ts * 0.54, GY + ts); }
+  else { c.moveTo(0, GY + ts * 0.54); c.lineTo(ts, GY + ts * 0.54); }
+  c.stroke();
+  // 電線本体(少し高い位置=影とずらして架線感を出す)
+  c.strokeStyle = '#2f2f2f';
+  c.beginPath();
+  if (vert) { c.moveTo(ts * 0.5, GY - ts * 0.06); c.lineTo(ts * 0.5, GY + ts); }
+  else { c.moveTo(0, GY + ts * 0.42); c.lineTo(ts, GY + ts * 0.42); }
+  c.stroke();
+  // 両端の電柱(道路の路肩に立つ)
+  const poleW = Math.max(1.5, ts * 0.08);
+  const drawPole = (px, py) => {
+    c.fillStyle = 'rgba(0,0,0,0.25)';
+    c.fillRect(px - poleW * 0.5 + 1, py + 1, poleW, poleW);
+    c.strokeStyle = '#7a5c3a';
+    c.lineWidth = poleW;
+    c.beginPath();
+    c.moveTo(px, py);
+    c.lineTo(px, py - ts * 0.45);
+    c.stroke();
+    c.strokeStyle = '#5d4a36';
+    c.lineWidth = Math.max(1, poleW * 0.6);
+    c.beginPath();
+    c.moveTo(px - ts * 0.12, py - ts * 0.38);
+    c.lineTo(px + ts * 0.12, py - ts * 0.38);
+    c.stroke();
+  };
+  if (vert) {
+    drawPole(ts * 0.5, GY + ts * 0.1);
+    drawPole(ts * 0.5, GY + ts * 0.96);
+  } else {
+    drawPole(ts * 0.08, GY + ts * 0.5);
+    drawPole(ts * 0.92, GY + ts * 0.5);
+  }
+  wireOverCache.set(key, sp);
+  return sp;
 }
 
 // 未開発の区画(色付きの更地+ラベル)
@@ -1972,6 +2128,10 @@ function tileSprite(type, lvl, variant, ts) {
     case T.RAIL:
       drawRailTile(c, ts, variant, lvl === 1);
       break;
+    case T.CROSSING:
+      // variantの下位4bitが道路マスク、上位4bitが線路マスク
+      drawCrossingTile(c, ts, variant & 15, (variant >> 4) & 15);
+      break;
     case T.FLOOD:
       // 洪水(明るい水色で land との違いを出す)
       c.fillStyle = '#5b9be0';
@@ -2171,9 +2331,9 @@ function connMask(x, y, type) {
   const match = (nx, ny) => {
     if (!inB(nx, ny)) return false;
     const t = g.t[idx(nx, ny)];
-    if (type === T.ROAD) return t === T.ROAD;
-    if (type === T.RAIL) return t === T.RAIL;
-    return t === T.WIRE || t === T.POWER || t === T.NUCLEAR;
+    if (type === T.ROAD) return isRoadLike(t);
+    if (type === T.RAIL) return isRailLike(t);
+    return t === T.WIRE || t === T.POWER || t === T.NUCLEAR || wireOverAt(idx(nx, ny));
   };
   return (match(x, y - 1) ? 1 : 0) | (match(x + 1, y) ? 2 : 0) |
          (match(x, y + 1) ? 4 : 0) | (match(x - 1, y) ? 8 : 0);
@@ -2413,7 +2573,7 @@ renderOverlay = function (ts, x0, y0, x1, y1) {
       if (g.overlayMode === 'power') {
         if (g.powered[i]) {
           color = 'rgba(76,175,80,0.45)'; // 通電: 緑
-        } else if (conducts(g.t[i]) || isZone(g.t[i]) || isBig(g.t[i])) {
+        } else if (conductsAt(i) || isZone(g.t[i]) || isBig(g.t[i])) {
           color = 'rgba(244,67,54,0.55)'; // 導電だが無電: 赤
         } else {
           color = 'rgba(0,0,0,0.1)';
@@ -2511,9 +2671,18 @@ function draw() {
       if (isBig(t) && lvl !== 0) continue;
       if (t === T.GRASS) lvl = (x * 7 + y * 13) % 2;
       else if (t === T.ROAD || t === T.WIRE || t === T.RAIL) variant = connMask(x, y, t);
+      else if (t === T.CROSSING) {
+        // 下位4bit=道路マスク、上位4bit=線路マスク
+        variant = connMask(x, y, T.ROAD) | (connMask(x, y, T.RAIL) << 4);
+      }
       const px = Math.round(x * ts - cam.x);
       const py = Math.round(y * ts - cam.y);
       cx.drawImage(tileSprite(t, lvl, variant, ts), px, py - ts);
+
+      // 電線オーバーレイ(道路・線路を横切る送電線)
+      if (wireOverAt(i)) {
+        cx.drawImage(wireOverSprite(connMask(x, y, T.WIRE), ts), px, py - ts);
+      }
 
       if (blink && !g.powered[i] &&
           (isZone(t) || t === T.POLICE || t === T.FIRE_ST || isBig(t))) {
@@ -2591,8 +2760,9 @@ function tileInfo(tx, ty) {
   const i = idx(tx, ty);
   const names = ['草地', '水', '森', '道路', '送電線', '住宅地', '商業地',
                  '工業地', '発電所', '警察署', '消防署', '公園', 'がれき', '火災',
-                 '線路', '洪水', '原子力発電所', 'スタジアム', '港', '空港'];
+                 '線路', '洪水', '原子力発電所', 'スタジアム', '港', '空港', '踏切'];
   let msg = names[g.t[i]];
+  if (wireOverAt(i)) msg += '(電線が横断)';
   if (isZone(g.t[i])) {
     msg += ` Lv.${g.lvl[i]}` + (g.powered[i] ? '' : '(電気なし)') +
            (roadNear[i] ? '' : '(道路なし)');

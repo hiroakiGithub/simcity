@@ -101,8 +101,9 @@ check(() => {
     for (const [name, type] of Object.entries(T)) {
       const size = BIG[type] || 1;
       const masked = type === T.ROAD || type === T.WIRE || (T.RAIL !== undefined && type === T.RAIL);
-      const maxLvl = masked ? 1 : MAX_LEVEL;
-      const maxVar = masked ? 15 : 0;
+      const isCrossing = T.CROSSING !== undefined && type === T.CROSSING;
+      const maxLvl = masked ? 1 : isCrossing ? 0 : MAX_LEVEL;
+      const maxVar = isCrossing ? 255 : masked ? 15 : 0; // 踏切は道路4bit+線路4bit
       for (let lvl = 0; lvl <= maxLvl; lvl++) {
         for (let v = 0; v <= maxVar; v++) {
           const sp = tileSprite(type, lvl, v, ts);
