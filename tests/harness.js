@@ -51,11 +51,20 @@ const EXPOSE = [
   'actorsStep', 'triggerDisaster', 'computeEvaluation', 'SAVE_KEY',
   // セーブスロット(4つ)
   'setSlot', 'getSlotInfo', 'deleteSlot', 'migrateLegacySave', 'currentSlot', 'slotKey',
+  'DIFFICULTY_FUNDS',
   // UIパネル関数(B担当)
   'openBudgetPanel', 'closeBudgetPanel',
   'openDisasterPanel', 'closeDisasterPanel',
   'openEvalPanel', 'closeEvalPanel',
   'openMapPanel', 'closeMapPanel',
+  // タイトル画面:セーブスロットカード・新規開始ダイアログ
+  'renderSlots', 'slotContinue', 'slotDelete',
+  'openNewGameDialog', 'closeNewGameDialog', 'selectDifficulty', 'confirmNewGame',
+  'newGameTargetSlot', 'newGameDifficulty',
+  // 統計グラフパネル
+  'openGraphPanel', 'closeGraphPanel', 'setGraphSeries', 'drawGraph', 'graphSeries',
+  // ミニマップ(データマップパネル)
+  'drawMinimap', 'minimapColor', 'minimapJumpToPixel', 'MINIMAP_TILE_PX',
 ];
 
 function createGame(opts = {}) {

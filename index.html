@@ -16,6 +16,7 @@
     <div class="hud-item" id="hud-funds">💰 0</div>
     <div class="hud-item" id="hud-pop">👥 0</div>
     <div class="hud-item" id="hud-date">1990年1月</div>
+    <div class="hud-item" id="hud-city"></div>
     <div class="hud-item" id="hud-approval">😊50%</div>
     <div class="hud-item hud-overlay-badge hidden" id="hud-overlay-badge"></div>
     <div id="rci">
@@ -46,6 +47,7 @@
     <div class="menu-row"><button id="btn-open-disaster" class="menu-btn">🌋 災害</button></div>
     <div class="menu-row"><button id="btn-open-eval" class="menu-btn">😊 市民評価</button></div>
     <div class="menu-row"><button id="btn-open-map" class="menu-btn">🗺️ データマップ</button></div>
+    <div class="menu-row"><button id="btn-open-graph" class="menu-btn">📈 統計</button></div>
     <div class="menu-row"><button id="btn-help" class="menu-btn">❓ 遊び方</button></div>
     <div class="menu-row"><button id="btn-title" class="menu-btn">🏠 タイトルへ戻る</button></div>
     <div class="menu-row"><button id="btn-close-menu" class="menu-btn">✕ 閉じる</button></div>
@@ -79,9 +81,31 @@
     <div id="title-inner">
       <h1>まちづくり<br>シミュレーション</h1>
       <p class="subtitle">〜 きみだけの都市をつくろう 〜</p>
-      <button id="btn-continue" class="title-btn">▶ つづきから</button>
-      <button id="btn-new" class="title-btn">★ はじめから</button>
+      <div id="slot-list"></div>
     </div>
+  </div>
+
+  <!-- 新規開始ダイアログ -->
+  <div id="newgame-panel" class="panel hidden">
+    <h2>★ 新規開始</h2>
+    <div class="menu-row"><span>都市名</span></div>
+    <div class="menu-row">
+      <input type="text" id="newgame-name" class="newgame-input" maxlength="12" value="わたしのまち">
+    </div>
+    <div class="menu-row"><span>難易度</span></div>
+    <div class="difficulty-options">
+      <button class="menu-btn difficulty-btn" data-difficulty="easy">
+        やさしい <span class="diff-funds">初期資金 §30,000</span>
+      </button>
+      <button class="menu-btn difficulty-btn active-diff" data-difficulty="normal">
+        ふつう <span class="diff-funds">初期資金 §20,000</span>
+      </button>
+      <button class="menu-btn difficulty-btn" data-difficulty="hard">
+        むずかしい <span class="diff-funds">初期資金 §10,000</span>
+      </button>
+    </div>
+    <div class="menu-row"><button id="btn-newgame-start" class="menu-btn newgame-start-btn">▶ 開始</button></div>
+    <div class="menu-row"><button id="btn-newgame-cancel" class="menu-btn">✕ キャンセル</button></div>
   </div>
 
   <!-- 予算ウィンドウ -->
@@ -182,6 +206,7 @@
   <!-- データマップ選択 -->
   <div id="map-panel" class="panel hidden">
     <h2>🗺️ データマップ</h2>
+    <canvas id="minimap-canvas" class="minimap-canvas" width="128" height="128"></canvas>
     <div class="map-options">
       <button class="menu-btn map-opt-btn active-map" data-mode="none">表示なし</button>
       <button class="menu-btn map-opt-btn" data-mode="power">⚡ 電力</button>
@@ -193,6 +218,26 @@
       <button class="menu-btn map-opt-btn" data-mode="fire">🚒 消防カバー</button>
     </div>
     <div class="menu-row"><button id="btn-close-map" class="menu-btn">✕ 閉じる</button></div>
+  </div>
+
+  <!-- 統計グラフパネル -->
+  <div id="graph-panel" class="panel hidden">
+    <h2>📈 統計</h2>
+    <div class="graph-options">
+      <button class="menu-btn graph-opt-btn active-graph" data-series="pop">👥 人口</button>
+      <button class="menu-btn graph-opt-btn" data-series="funds">💰 資金</button>
+      <button class="menu-btn graph-opt-btn" data-series="approval">😊 支持率</button>
+    </div>
+    <div class="graph-canvas-wrap">
+      <canvas id="graph-canvas" width="320" height="160"></canvas>
+      <div id="graph-empty" class="graph-empty hidden">まだデータがありません</div>
+    </div>
+    <div class="menu-row graph-labels">
+      <span id="graph-min">最小: -</span>
+      <span id="graph-cur">現在: -</span>
+      <span id="graph-max">最大: -</span>
+    </div>
+    <div class="menu-row"><button id="btn-close-graph" class="menu-btn">✕ 閉じる</button></div>
   </div>
 
   <!-- トースト通知 -->

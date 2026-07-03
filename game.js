@@ -3052,11 +3052,144 @@ function openMapPanel() {
   document.querySelectorAll('.map-opt-btn').forEach((btn) => {
     btn.classList.toggle('active-map', btn.dataset.mode === g.overlayMode);
   });
+  drawMinimap();
   $('map-panel').classList.remove('hidden');
 }
 
 function closeMapPanel() {
   $('map-panel').classList.add('hidden');
+}
+
+/* =========================================================
+ * ミニマップ(データマップパネル内)
+ * ========================================================= */
+const MINIMAP_TILE_PX = 2;
+
+// タイル種別をミニマップ色に変換する(水=青、草木=緑、道路=灰、線路=茶、
+// 区画=R緑/C青/I黄(発展済みは濃く)、施設=白系、がれき/火=赤系)
+function minimapColor(i) {
+  const t = g.t[i];
+  switch (t) {
+    case T.WATER: return '#3a7bd5';
+    case T.FLOOD: return '#4fc3f7';
+    case T.GRASS: return '#5da344';
+    case T.TREE: return '#2f7d32';
+    case T.ROAD: case T.CROSSING: return '#808080';
+    case T.RAIL: return '#8a6d4a';
+    case T.WIRE: return '#6b6b6b';
+    case T.RES: return g.lvl[i] > 0 ? '#1b5e20' : '#a5d6a7';
+    case T.COM: return g.lvl[i] > 0 ? '#0d47a1' : '#90caf9';
+    case T.IND: return g.lvl[i] > 0 ? '#f57f17' : '#fff59d';
+    case T.POWER: case T.NUCLEAR: case T.POLICE: case T.FIRE_ST:
+    case T.PARK: case T.STADIUM: case T.SEAPORT: case T.AIRPORT:
+      return '#f5f5f5';
+    case T.RUBBLE: return '#c62828';
+    case T.FIRE: return '#ff5252';
+    default: return '#5da344';
+  }
+}
+
+// ミニマップを再描画する(パネルを開くたびに呼ばれる)
+function drawMinimap() {
+  const canvas = $('minimap-canvas');
+  const ctx = canvas.getContext('2d');
+  const w = W * MINIMAP_TILE_PX, h = H * MINIMAP_TILE_PX;
+  ctx.clearRect(0, 0, w, h);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      ctx.fillStyle = minimapColor(idx(x, y));
+      ctx.fillRect(x * MINIMAP_TILE_PX, y * MINIMAP_TILE_PX, MINIMAP_TILE_PX, MINIMAP_TILE_PX);
+    }
+  }
+  // 現在のビューポート範囲を白枠で表示
+  const ts = BASE_TILE * cam.zoom;
+  const vx = (cam.x / ts) * MINIMAP_TILE_PX;
+  const vy = (cam.y / ts) * MINIMAP_TILE_PX;
+  const vw = (cv.clientWidth / ts) * MINIMAP_TILE_PX;
+  const vh = (cv.clientHeight / ts) * MINIMAP_TILE_PX;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(vx + 0.5, vy + 0.5, vw, vh);
+}
+
+// ミニマップ上のピクセル座標(canvas座標系)へカメラをジャンプさせる
+function minimapJumpToPixel(px, py) {
+  const ts = BASE_TILE * cam.zoom;
+  const tileX = px / MINIMAP_TILE_PX;
+  const tileY = py / MINIMAP_TILE_PX;
+  cam.x = tileX * ts - cv.clientWidth / 2;
+  cam.y = tileY * ts - cv.clientHeight / 2;
+  clampCamera();
+}
+
+/* =========================================================
+ * 統計グラフパネル
+ * ========================================================= */
+let graphSeries = 'pop';
+const GRAPH_COLORS = { pop: '#66bb6a', funds: '#ffd54f', approval: '#4dd0e1' };
+
+function openGraphPanel() {
+  document.querySelectorAll('.graph-opt-btn').forEach((btn) => {
+    btn.classList.toggle('active-graph', btn.dataset.series === graphSeries);
+  });
+  drawGraph();
+  $('graph-panel').classList.remove('hidden');
+}
+
+function closeGraphPanel() {
+  $('graph-panel').classList.add('hidden');
+}
+
+function setGraphSeries(series) {
+  graphSeries = series;
+  document.querySelectorAll('.graph-opt-btn').forEach((b) =>
+    b.classList.toggle('active-graph', b.dataset.series === graphSeries));
+  drawGraph();
+}
+
+// g.history[graphSeries] を折れ線グラフとして #graph-canvas に描く
+function drawGraph() {
+  const canvas = $('graph-canvas');
+  const emptyEl = $('graph-empty');
+  const data = (g.history && g.history[graphSeries]) || [];
+
+  if (data.length < 2) {
+    emptyEl.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    $('graph-min').textContent = '最小: -';
+    $('graph-max').textContent = '最大: -';
+    $('graph-cur').textContent = '現在: -';
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  canvas.classList.remove('hidden');
+
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width || 320, h = canvas.height || 160;
+  ctx.clearRect(0, 0, w, h);
+
+  let min = Infinity, max = -Infinity;
+  for (const v of data) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min === max) { min -= 1; max += 1; }
+
+  const pad = 6;
+  ctx.strokeStyle = GRAPH_COLORS[graphSeries] || '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < data.length; i++) {
+    const x = pad + (i / (data.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((data[i] - min) / (max - min)) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  const fmt = (v) => Math.round(v).toLocaleString();
+  $('graph-min').textContent = '最小: ' + fmt(min);
+  $('graph-max').textContent = '最大: ' + fmt(max);
+  $('graph-cur').textContent = '現在: ' + fmt(data[data.length - 1]);
 }
 
 /* =========================================================
@@ -3176,6 +3309,23 @@ document.querySelectorAll('.map-opt-btn').forEach((btn) => {
   });
 });
 
+// ミニマップのタップでその場所へカメラをジャンプする
+$('minimap-canvas').addEventListener('click', (e) => {
+  const rect = $('minimap-canvas').getBoundingClientRect();
+  minimapJumpToPixel(e.clientX - rect.left, e.clientY - rect.top);
+  closeMapPanel();
+});
+
+// ===== 統計グラフパネル =====
+$('btn-open-graph').addEventListener('click', () => {
+  $('menu-panel').classList.add('hidden');
+  openGraphPanel();
+});
+$('btn-close-graph').addEventListener('click', closeGraphPanel);
+document.querySelectorAll('.graph-opt-btn').forEach((btn) => {
+  btn.addEventListener('click', () => setGraphSeries(btn.dataset.series));
+});
+
 $('btn-help').addEventListener('click', () => {
   $('menu-panel').classList.add('hidden');
   $('help-panel').classList.remove('hidden');
@@ -3190,22 +3340,121 @@ $('btn-title').addEventListener('click', () => {
   showTitle();
 });
 
-$('btn-continue').addEventListener('click', () => {
-  if (loadGame()) startGame();
-  else toast('セーブデータが読み込めませんでした');
-});
+/* =========================================================
+ * タイトル画面:セーブスロット(4枠)
+ * ========================================================= */
 
-$('btn-new').addEventListener('click', () => {
-  if (hasSave() && !confirm('セーブデータがあります。新しく始めると上書きされます。よろしいですか?')) {
-    return;
+// セーブありスロット:つづきから(読み込んで開始)
+function slotContinue(n) {
+  setSlot(n);
+  if (loadGame()) {
+    startGame();
+    return true;
   }
-  newGame();
+  toast('セーブデータが読み込めませんでした');
+  return false;
+}
+
+// セーブありスロット:削除(確認ダイアログ付き)
+function slotDelete(n) {
+  const info = getSlotInfo(n);
+  const label = info.exists ? info.name : ('スロット' + n);
+  if (!confirm(`「${label}」のセーブを削除しますか?この操作は取り消せません。`)) return false;
+  deleteSlot(n);
+  renderSlots();
+  return true;
+}
+
+// タイトル画面のスロット一覧を最新のセーブ状況で描き直す
+function renderSlots() {
+  const list = $('slot-list');
+  list.innerHTML = '';
+  for (let n = 1; n <= 4; n++) {
+    const info = getSlotInfo(n);
+    const card = document.createElement('div');
+    card.className = 'slot-card' + (info.exists ? '' : ' slot-empty');
+
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'slot-info';
+    const cityDiv = document.createElement('div');
+    cityDiv.className = 'slot-city';
+    cityDiv.textContent = info.exists ? `🏙️ ${info.name}` : '(あきち)';
+    infoDiv.appendChild(cityDiv);
+    if (info.exists) {
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'slot-meta';
+      metaDiv.textContent = `👥 ${info.pop.toLocaleString()}人 / ${info.year}年${info.month}月`;
+      infoDiv.appendChild(metaDiv);
+    }
+    card.appendChild(infoDiv);
+
+    const actions = document.createElement('div');
+    actions.className = 'slot-actions';
+    if (info.exists) {
+      const btnContinue = document.createElement('button');
+      btnContinue.className = 'slot-btn slot-continue';
+      btnContinue.textContent = '▶ つづきから';
+      btnContinue.addEventListener('click', () => slotContinue(n));
+      actions.appendChild(btnContinue);
+
+      const btnDelete = document.createElement('button');
+      btnDelete.className = 'slot-btn slot-delete';
+      btnDelete.textContent = '🗑 削除';
+      btnDelete.addEventListener('click', () => slotDelete(n));
+      actions.appendChild(btnDelete);
+    } else {
+      const btnStart = document.createElement('button');
+      btnStart.className = 'slot-btn slot-start';
+      btnStart.textContent = '★ はじめる';
+      btnStart.addEventListener('click', () => openNewGameDialog(n));
+      actions.appendChild(btnStart);
+    }
+    card.appendChild(actions);
+    list.appendChild(card);
+  }
+}
+
+/* ===== 新規開始ダイアログ ===== */
+let newGameTargetSlot = 1;
+let newGameDifficulty = 'normal';
+
+// 難易度ボタンの選択状態を更新する
+function selectDifficulty(level) {
+  newGameDifficulty = level;
+  document.querySelectorAll('.difficulty-btn').forEach((b) =>
+    b.classList.toggle('active-diff', b.dataset.difficulty === newGameDifficulty));
+}
+
+function openNewGameDialog(slotN) {
+  newGameTargetSlot = slotN;
+  $('newgame-name').value = 'わたしのまち';
+  selectDifficulty('normal');
+  $('newgame-panel').classList.remove('hidden');
+}
+
+function closeNewGameDialog() {
+  $('newgame-panel').classList.add('hidden');
+}
+
+// 「開始」ボタン:入力内容から新規ゲームを作成してスタートする
+function confirmNewGame() {
+  const raw = $('newgame-name').value;
+  const name = (raw && raw.trim()) ? raw.trim().slice(0, 12) : 'わたしのまち';
+  setSlot(newGameTargetSlot);
+  newGame(name, newGameDifficulty);
+  closeNewGameDialog();
   startGame();
+}
+
+document.querySelectorAll('.difficulty-btn').forEach((btn) => {
+  btn.addEventListener('click', () => selectDifficulty(btn.dataset.difficulty));
 });
+$('btn-newgame-start').addEventListener('click', confirmNewGame);
+$('btn-newgame-cancel').addEventListener('click', closeNewGameDialog);
 
 function showTitle() {
   $('title-screen').classList.remove('hidden');
-  $('btn-continue').disabled = !hasSave();
+  renderSlots();
 }
 
 function newGame(name, difficulty) {
@@ -3234,6 +3483,8 @@ function newGame(name, difficulty) {
 
 function startGame() {
   $('title-screen').classList.add('hidden');
+  // HUDに都市名を表示
+  $('hud-city').textContent = g.name;
   // カメラをマップ中央へ
   const ts = BASE_TILE * cam.zoom;
   cam.x = (W * ts - cv.clientWidth) / 2;
