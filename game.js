@@ -12,6 +12,10 @@ const SAVE_KEY = 'machizukuri_save_v1';
 const CONGESTION = 150;          // 交通渋滞しきい値
 const START_FUNDS = 20000;
 const START_YEAR = 1990;
+// 難易度ごとの初期資金・自動災害発生確率
+const DIFFICULTY_FUNDS = { easy: 30000, normal: 20000, hard: 10000 };
+const DIFFICULTY_DISASTER_RATE = { easy: 0.002, normal: 0.004, hard: 0.008 };
+const HISTORY_MAX = 240; // 統計グラフ用履歴の最大件数(20年分)
 const MAX_LEVEL = 4;           // 区画の最大発展レベル
 const PLANT_CAPACITY = 300;    // 石炭発電所1基が電気を送れるタイル数
 const NUCLEAR_CAPACITY = 700;  // 原子力発電所1基が電気を送れるタイル数
@@ -74,6 +78,11 @@ const g = {
   funds: START_FUNDS,
   month: 0,                       // 開始からの経過月数
   taxRate: 7,
+  // v4: 都市名・難易度
+  name: 'わたしのまち',
+  difficulty: 'normal',           // 'easy' | 'normal' | 'hard'
+  // v4: 統計グラフ用履歴(毎月記録、最大HISTORY_MAX件)
+  history: { pop: [], funds: [], approval: [] },
   milestone: 0,                   // 達成済みマイルストーン数
   pop: 0,
   jobs: 0,
@@ -185,8 +194,25 @@ function genMap() {
     x = clamp(x, 1, W - 4);
   }
 
+  // 湖:2〜4個のランダムな楕円形の湖(川と重なってもよい)
+  const lakeCount = 2 + Math.floor(rnd() * 3); // 2〜4個
+  for (let l = 0; l < lakeCount; l++) {
+    const lcx = Math.floor(rnd() * W), lcy = Math.floor(rnd() * H);
+    const rx = 2 + Math.floor(rnd() * 3); // 2〜4
+    const ry = 2 + Math.floor(rnd() * 3); // 2〜4
+    for (let dy = -ry; dy <= ry; dy++) {
+      for (let dx = -rx; dx <= rx; dx++) {
+        const x2 = lcx + dx, y2 = lcy + dy;
+        if (!inB(x2, y2)) continue;
+        if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1) {
+          g.t[idx(x2, y2)] = T.WATER;
+        }
+      }
+    }
+  }
+
   // 森:ランダムウォークで木の群生をつくる
-  for (let c = 0; c < 14; c++) {
+  for (let c = 0; c < 18; c++) {
     let tx = Math.floor(rnd() * W), ty = Math.floor(rnd() * H);
     for (let s = 0; s < 25; s++) {
       if (inB(tx, ty) && g.t[idx(tx, ty)] === T.GRASS) g.t[idx(tx, ty)] = T.TREE;
@@ -939,8 +965,10 @@ function simMonth() {
   }
   // 12ヶ月ごと自動セーブ
   if (g.month % 12 === 0) saveGame(true);
-  // 自動災害
-  if (g.month > 24 && g.autoDisaster && rnd() < 0.004) {
+  // 自動災害(難易度で発生確率が変わる)
+  const disasterRate = DIFFICULTY_DISASTER_RATE[g.difficulty] !== undefined
+    ? DIFFICULTY_DISASTER_RATE[g.difficulty] : DIFFICULTY_DISASTER_RATE.normal;
+  if (g.month > 24 && g.autoDisaster && rnd() < disasterRate) {
     const r = rnd();
     if (r < 0.50) triggerDisaster('fire');
     else if (r < 0.70) triggerDisaster('flood');
@@ -954,6 +982,13 @@ function simMonth() {
       if (avgP > 20 || rnd() < 0.3) triggerDisaster('monster');
     }
   }
+  // v4: 統計グラフ用履歴を毎月記録(最大HISTORY_MAX件、超えたら古い方から破棄)
+  g.history.pop.push(g.pop);
+  g.history.funds.push(g.funds);
+  g.history.approval.push(g.eval.approval);
+  if (g.history.pop.length > HISTORY_MAX) g.history.pop.shift();
+  if (g.history.funds.length > HISTORY_MAX) g.history.funds.shift();
+  if (g.history.approval.length > HISTORY_MAX) g.history.approval.shift();
   updateHUD();
 }
 
@@ -970,13 +1005,82 @@ function setSpeed(s) {
 }
 
 /* =========================================================
- * セーブ・ロード
+ * セーブ・ロード(4スロット対応)
  * ========================================================= */
+let currentSlot = 1; // 選択中のセーブスロット(1〜4)
+
+// スロット番号からlocalStorageキーを求める
+function slotKey(n) {
+  return SAVE_KEY + '_slot' + n;
+}
+
+// 使用するスロットを切り替える
+function setSlot(n) {
+  currentSlot = clamp(Math.round(n), 1, 4);
+}
+
+// セーブデータ(t/lvl配列)から人口を概算する(ロードせずに概要を出すため)
+function popFromData(data) {
+  let pop = 0;
+  if (Array.isArray(data.t) && Array.isArray(data.lvl)) {
+    for (let i = 0; i < data.t.length; i++) {
+      if (data.t[i] === T.RES) pop += (data.lvl[i] || 0) * 16;
+    }
+  }
+  return pop;
+}
+
+// 指定スロットのセーブ概要を、ロードせずに返す
+function getSlotInfo(n) {
+  try {
+    const raw = localStorage.getItem(slotKey(n));
+    if (raw === null) return { exists: false };
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.t) || data.t.length !== W * H) return { exists: false };
+    return {
+      exists: true,
+      name: data.name || 'わたしのまち',
+      pop: popFromData(data),
+      year: START_YEAR + Math.floor((data.month || 0) / 12),
+      month: ((data.month || 0) % 12) + 1,
+      savedAt: data.savedAt || 0,
+    };
+  } catch (e) {
+    return { exists: false };
+  }
+}
+
+// 指定スロットのセーブデータを削除する
+function deleteSlot(n) {
+  try {
+    localStorage.removeItem(slotKey(n));
+  } catch (e) {
+    // 何もしない
+  }
+}
+
+// 旧バージョン(スロット制導入前)のセーブを slot1 へ移行する。起動時に一度呼ぶ。
+function migrateLegacySave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (raw === null) return;
+    if (localStorage.getItem(slotKey(1)) === null) {
+      localStorage.setItem(slotKey(1), raw);
+    }
+    localStorage.removeItem(SAVE_KEY);
+  } catch (e) {
+    // 移行に失敗しても起動は継続する
+  }
+}
+
 function saveGame(auto) {
   if (!g.running) return;
   try {
     const data = {
-      v: 3,
+      v: 4,
+      name: g.name,
+      difficulty: g.difficulty,
+      savedAt: Date.now(),
       funds: g.funds,
       month: g.month,
       taxRate: g.taxRate,
@@ -989,8 +1093,13 @@ function saveGame(auto) {
       autoDisaster: g.autoDisaster,
       finYear: Object.assign({}, g.finYear),
       lastFin: Object.assign({}, g.lastFin),
+      history: {
+        pop: g.history.pop.slice(),
+        funds: g.history.funds.slice(),
+        approval: g.history.approval.slice(),
+      },
     };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(slotKey(currentSlot), JSON.stringify(data));
     if (!auto) toast('💾 セーブしました');
   } catch (e) {
     toast('セーブに失敗しました');
@@ -998,14 +1107,14 @@ function saveGame(auto) {
 }
 
 function hasSave() {
-  return localStorage.getItem(SAVE_KEY) !== null;
+  return localStorage.getItem(slotKey(currentSlot)) !== null;
 }
 
 function loadGame() {
   try {
-    const data = JSON.parse(localStorage.getItem(SAVE_KEY));
+    const data = JSON.parse(localStorage.getItem(slotKey(currentSlot)));
     if (!data || !Array.isArray(data.t) || data.t.length !== W * H) return false;
-    if (data.v !== 1 && data.v !== 2 && data.v !== 3) return false;
+    if (data.v !== 1 && data.v !== 2 && data.v !== 3 && data.v !== 4) return false;
     g.t.set(data.t);
     g.lvl.set(data.lvl);
     g.fireT.set(data.fireT);
@@ -1026,6 +1135,16 @@ function loadGame() {
                              : { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
     g.lastFin = data.lastFin ? Object.assign({}, data.lastFin)
                              : { tax: 0, road: 0, police: 0, fire: 0, other: 0 };
+    // v4フィールド(v3以前の場合はデフォルト値を補う)
+    g.name = data.name || 'わたしのまち';
+    g.difficulty = data.difficulty || 'normal';
+    g.history = (data.history && Array.isArray(data.history.pop))
+      ? {
+          pop: data.history.pop.slice(),
+          funds: Array.isArray(data.history.funds) ? data.history.funds.slice() : [],
+          approval: Array.isArray(data.history.approval) ? data.history.approval.slice() : [],
+        }
+      : { pop: [], funds: [], approval: [] };
     g.actors = [];
     g.eval = { score: 0, approval: 50, problems: [] };
     g.pendingBudget = false;
@@ -3089,9 +3208,12 @@ function showTitle() {
   $('btn-continue').disabled = !hasSave();
 }
 
-function newGame() {
+function newGame(name, difficulty) {
   genMap();
-  g.funds = START_FUNDS;
+  g.name = name || 'わたしのまち';
+  g.difficulty = (difficulty === 'easy' || difficulty === 'hard') ? difficulty : 'normal';
+  g.funds = DIFFICULTY_FUNDS[g.difficulty] !== undefined
+    ? DIFFICULTY_FUNDS[g.difficulty] : START_FUNDS;
   g.month = 0;
   g.taxRate = 7;
   g.milestone = 0;
@@ -3107,6 +3229,7 @@ function newGame() {
   g.eval = { score: 0, approval: 50, problems: [] };
   g.shakeT = 0;
   g.overlayMode = 'none';
+  g.history = { pop: [], funds: [], approval: [] };
 }
 
 function startGame() {
@@ -3139,6 +3262,7 @@ window.addEventListener('resize', () => {
 });
 
 /* ===== 起動 ===== */
+migrateLegacySave(); // 旧バージョンのセーブ(スロット制導入前)をslot1へ移行
 resizeCanvas();
 buildToolbar();
 showTitle();

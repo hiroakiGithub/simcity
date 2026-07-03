@@ -448,7 +448,7 @@ console.log('[systems.test] 6. セーブv2ラウンドトリップ・v1互換ロ
   // --- 6a. v2ラウンドトリップ ---
   const store = {};
   const G = createGame({ store });
-  const { g, T, W, H, idx, newGame, startGame, saveGame, loadGame, SAVE_KEY } = G;
+  const { g, T, W, H, idx, newGame, startGame, saveGame, loadGame, SAVE_KEY, slotKey } = G;
 
   newGame();
   startGame();
@@ -463,11 +463,11 @@ console.log('[systems.test] 6. セーブv2ラウンドトリップ・v1互換ロ
 
   saveGame(false);
 
-  // ストアにv:2で保存されているか確認
-  const savedRaw = store[SAVE_KEY];
+  // ストアにv:4で保存されているか確認(デフォルトはslot1)
+  const savedRaw = store[slotKey(1)];
   assert(savedRaw !== undefined, 'セーブキーにデータが保存される');
   const savedData = JSON.parse(savedRaw);
-  assert(savedData.v === 3, 'セーブデータのバージョンがv3');
+  assert(savedData.v === 4, 'セーブデータのバージョンがv4');
   assert(savedData.budget !== undefined, 'budget が保存される');
   assert(savedData.autoDisaster === false, 'autoDisaster が保存される');
   assert(savedData.finYear !== undefined, 'finYear が保存される');
@@ -492,7 +492,7 @@ console.log('[systems.test] 6. セーブv2ラウンドトリップ・v1互換ロ
   const store2 = {};
   const G3 = createGame({ store: store2 });
   const { g: g3, T: T3, W: W3, H: H3, newGame: newGame3, startGame: startGame3,
-          loadGame: loadGame3, SAVE_KEY: SAVE_KEY3 } = G3;
+          loadGame: loadGame3, SAVE_KEY: SAVE_KEY3, slotKey: slotKey3 } = G3;
 
   // v1形式のセーブデータを手動構築
   const v1Data = {
@@ -506,7 +506,7 @@ console.log('[systems.test] 6. セーブv2ラウンドトリップ・v1互換ロ
     fireT: new Array(W3 * H3).fill(0),
     // v2フィールドなし(意図的)
   };
-  store2[SAVE_KEY3] = JSON.stringify(v1Data);
+  store2[slotKey3(1)] = JSON.stringify(v1Data); // デフォルトはslot1
 
   newGame3();
   startGame3();

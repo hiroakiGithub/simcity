@@ -49,6 +49,8 @@ const EXPOSE = [
   'tileSprite', 'draw', 'cam', 'connMask', 'roadNear', 'pollution', 'landValue',
   'fireCov', 'policeCov', 'traffic', 'crime', 'updateTraffic', 'updateCrime',
   'actorsStep', 'triggerDisaster', 'computeEvaluation', 'SAVE_KEY',
+  // セーブスロット(4つ)
+  'setSlot', 'getSlotInfo', 'deleteSlot', 'migrateLegacySave', 'currentSlot', 'slotKey',
   // UIパネル関数(B担当)
   'openBudgetPanel', 'closeBudgetPanel',
   'openDisasterPanel', 'closeDisasterPanel',

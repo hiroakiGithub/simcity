@@ -70,10 +70,11 @@ assert(loadGame(), 'v3セーブをロードできる');
 assert(g.wireOver[idx(bx + 6, by + 3)] === 1, 'ロードでwireOverが復元される');
 
 // 7. v2形式(wireOverなし)のロード互換
-const data = JSON.parse(G.store[G.SAVE_KEY]);
+const slotKeyKey = G.slotKey(1); // デフォルトはslot1
+const data = JSON.parse(G.store[slotKeyKey]);
 data.v = 2;
 delete data.wireOver;
-G.store[G.SAVE_KEY] = JSON.stringify(data);
+G.store[slotKeyKey] = JSON.stringify(data);
 assert(loadGame(), 'v2形式もロードできる');
 let anyWire = 0;
 for (let i = 0; i < W * H; i++) anyWire += g.wireOver[i];

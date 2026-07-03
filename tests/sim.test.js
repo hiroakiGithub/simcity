@@ -8,6 +8,7 @@ const { g, T, W, H, idx, newGame, startGame, simMonth, saveGame, loadGame, place
 
 newGame();
 startGame();
+g.autoDisaster = false; // ランダム災害でテストが不安定にならないよう無効化
 assert(g.funds === 20000, '初期資金20000');
 
 // 川を避けて建設可能な草地エリアを探す
